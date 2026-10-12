@@ -1,0 +1,4 @@
+.env
+gtfs/
+osm_*.json
+routes.log
