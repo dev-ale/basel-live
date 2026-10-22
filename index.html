@@ -39,6 +39,9 @@
          transition: box-shadow .4s; cursor: pointer; }
   .veh.bus { border-radius: 50%; font-size: 11px; width: 26px; height: 26px; }
   body.z-mid .veh { transform: scale(.8); } body.z-far .veh { transform: scale(.62); }
+  /* 3D zoom: the model is the vehicle, the badge becomes a small label floating above it */
+  body.z3d .veh { transform: translateY(var(--lift, -12px)) scale(.72); opacity: .92; }
+  body.z3d .veh.dwell::after { display: none; }
   .veh.late { box-shadow: 0 0 0 2px rgba(0,0,0,.35), 0 0 0 5px rgba(251,113,133,.45), 0 6px 14px rgba(0,0,0,.6); }
   .veh.approach { opacity: .55; border-style: dashed; }  /* no live data yet: scheduled position */
   .veh.dwell::after { content: ''; position: absolute; inset: -6px; border-radius: inherit; border: 2px solid rgba(255,255,255,.35); animation: ring 2s infinite; }
@@ -74,7 +77,10 @@
 </div>
 <div id="legend"></div>
 <script type="importmap">
-{ "imports": { "maplibre-gl": "https://cdn.jsdelivr.net/npm/maplibre-gl@6.13.0/dist/maplibre-gl.mjs" } }
+{ "imports": {
+  "maplibre-gl": "https://cdn.jsdelivr.net/npm/maplibre-gl@6.13.0/dist/maplibre-gl.mjs",
+  "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js"
+} }
 </script>
 <script type="module" src="app.js"></script>
 </body>

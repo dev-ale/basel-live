@@ -19,13 +19,13 @@ const FALLBACK_COLOURS = { '1': '#835237', '2': '#A68351', '3': '#324EA1', '6': 
   '12': '#9471AD', '14': '#F58220', '15': '#009640', '16': '#AFCA0B', '17': '#00AEEF', '21': '#00A295' };
 
 import * as maplibregl from 'maplibre-gl';
+import { vehicleLayer, drawVehicles, vehicleType } from './vehicles3d.js';
 
 /* ---------- map ---------- */
-// 2D for now: rotation and pitch stay off until the 3D vehicle layer lands
+const ZOOM_3D = 16;   // from here vehicles are 3D models (a tram is ~60 px long); below it, 2D badges
 const map = new maplibregl.Map({ container: 'map', style: 'https://tiles.openfreemap.org/styles/dark', center: [7.59, 47.556], zoom: 13,
-  maxPitch: 0, dragRotate: false, attributionControl: { compact: true, customAttribution: 'transport.opendata.ch' } });
-map.touchZoomRotate.disableRotation(); map.keyboard.disableRotation();
-map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'bottom-right');
+  maxPitch: 75, hash: true, attributionControl: { compact: true, customAttribution: 'transport.opendata.ch' } });
+map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'bottom-right');
 const mapReady = new Promise(r => map.on('load', r));
 
 /* ---------- state ---------- */
@@ -33,6 +33,7 @@ const journeys = new Map();   // key -> { key, line, cat, to, op, stops:[{id,nam
 const stops = new Map();      // id -> { id, name, lat, lon, hub }
 let stopsDirty = false;       // stop source is re-uploaded from the render loop, not once per added stop
 const routes = {};            // line -> { colour, graph }
+const ALL_TRAMS = '*tram', ALL_BUSES = '*bus';   // routes keys for the merged network graphs
 const pathCache = new Map();  // `${line}|${a}|${b}` -> [[lat,lon],...] or null
 
 const $ = id => document.getElementById(id);
@@ -56,38 +57,59 @@ function buildGraph(segments) {
   }
   return { nodes, key };
 }
-function nearestNode(g, p) {
-  let best = null, bd = Infinity;
-  for (const [k, n] of g.nodes) { const d = (n.p[0] - p[0]) ** 2 + ((n.p[1] - p[1]) * 0.68) ** 2; if (d < bd) { bd = d; best = k; } }
-  return { k: best, m: Math.sqrt(bd) * 111000 };
+// binary min-heap of [priority, value]
+function heap() {
+  const a = [];
+  return {
+    size: () => a.length,
+    push(x) { a.push(x); let i = a.length - 1; while (i) { const p = (i - 1) >> 1; if (a[p][0] <= a[i][0]) break; [a[p], a[i]] = [a[i], a[p]]; i = p; } },
+    pop() {
+      const top = a[0], last = a.pop();
+      if (a.length) { a[0] = last; let i = 0; for (;;) { const l = 2 * i + 1, r = l + 1; let m = i;
+        if (l < a.length && a[l][0] < a[m][0]) m = l; if (r < a.length && a[r][0] < a[m][0]) m = r;
+        if (m === i) break; [a[m], a[i]] = [a[i], a[m]]; i = m; } }
+      return top;
+    },
+  };
 }
-function shortestPath(g, from, to) {
-  const dist = new Map([[from, 0]]), prev = new Map(), open = [[0, from]], done = new Set();
-  while (open.length) {
-    open.sort((a, b) => a[0] - b[0]); const [d, k] = open.shift();
-    if (k === to) break; if (done.has(k)) continue; done.add(k);
+// candidate nodes for a stop: every node within 40 m (both directions' tracks), else the nearest one within 120 m
+function nodesNear(g, p) {
+  const near = []; let best = null, bd = Infinity;
+  for (const [k, n] of g.nodes) { const m = haversine(n.p, p); if (m < 40) near.push([m, k]); if (m < bd) { bd = m; best = k; } }
+  return near.length ? near : bd < 120 ? [[bd, best]] : [];
+}
+// multi-source Dijkstra: shortest track from any start candidate to any target candidate.
+// Each direction is often its own parallel way, joined only at the termini; a single nearest node could sit on the
+// wrong one and send the path to the end of the line and back.
+function shortestPath(g, starts, targets) {
+  const dist = new Map(), prev = new Map(), open = heap(), done = new Set(); let end = null;
+  for (const [d, k] of starts) { dist.set(k, d); open.push([d, k]); }
+  while (open.size()) {
+    const [d, k] = open.pop();
+    if (done.has(k)) continue; done.add(k);
+    if (targets.has(k)) { end = k; break; }
     for (const [nk, w] of g.nodes.get(k).adj) { const nd = d + w; if (nd < (dist.get(nk) ?? Infinity)) { dist.set(nk, nd); prev.set(nk, k); open.push([nd, nk]); } }
   }
-  if (!dist.has(to)) return null;
-  const path = []; for (let k = to; k; k = prev.get(k)) path.unshift(g.nodes.get(k).p);
+  if (end == null) return null;
+  const path = []; for (let k = end; k; k = prev.get(k)) path.unshift(g.nodes.get(k).p);
   return path;
 }
 function trackBetween(line, a, b) {
   const ck = `${line}|${a.id}|${b.id}`;
   if (pathCache.has(ck)) return pathCache.get(ck);
-  let path = null; const r = routes[line];
-  if (r) {
-    const na = nearestNode(r.graph, [a.lat, a.lon]), nb = nearestNode(r.graph, [b.lat, b.lon]);
-    if (na.m < 120 && nb.m < 120) {
-      const p = shortestPath(r.graph, na.k, nb.k);
-      const straight = haversine([a.lat, a.lon], [b.lat, b.lon]);
-      if (p && pathLength(p) < straight * 2.5 + 200) path = [[a.lat, a.lon], ...p, [b.lat, b.lon]];
-    }
-  }
-  if (!path) path = [[a.lat, a.lon], [b.lat, b.lon]];
+  // the line's own track first; diversions leave it, so then any tram (or bus) line's track
+  const path = routeVia(routes[line]?.graph, a, b) || routeVia(routes[TRAM_LINES.test(line) ? ALL_TRAMS : ALL_BUSES]?.graph, a, b)
+    || [[a.lat, a.lon], [b.lat, b.lon]];
   const cum = [0]; for (let i = 1; i < path.length; i++) cum.push(cum[i - 1] + haversine(path[i - 1], path[i]));
   const out = { path, cum, len: cum[cum.length - 1] };
   pathCache.set(ck, out); return out;
+}
+function routeVia(g, a, b) {
+  if (!g) return null;
+  const na = nodesNear(g, [a.lat, a.lon]), nb = nodesNear(g, [b.lat, b.lon]);
+  if (!na.length || !nb.length) return null;
+  const p = shortestPath(g, na, new Set(nb.map(([, k]) => k)));
+  return p && pathLength(p) < haversine([a.lat, a.lon], [b.lat, b.lon]) * 2.5 + 200 ? [[a.lat, a.lon], ...p, [b.lat, b.lon]] : null;
 }
 const pathLength = p => { let l = 0; for (let i = 1; i < p.length; i++) l += haversine(p[i - 1], p[i]); return l; };
 function along(track, t) {
@@ -101,12 +123,14 @@ async function loadRoutes() {
   try {
     const res = await fetch('routes.json'); if (!res.ok) throw 0;
     const data = await res.json();
-    const features = [];
+    const features = [], all = { tram: [], bus: [] };
     for (const [line, r] of Object.entries(data.lines)) {
       routes[line] = { colour: r.colour, graph: buildGraph(r.segments) };
+      all[TRAM_LINES.test(line) ? 'tram' : 'bus'].push(...r.segments);
       const tram = TRAM_LINES.test(line), colour = r.colour || colourFor(line);
       for (const seg of r.segments) features.push({ type: 'Feature', properties: { colour, tram }, geometry: { type: 'LineString', coordinates: seg.map(([lat, lon]) => [lon, lat]) } });
     }
+    routes[ALL_TRAMS] = { graph: buildGraph(all.tram) }; routes[ALL_BUSES] = { graph: buildGraph(all.bus) };
     map.addSource('tracks', { type: 'geojson', data: { type: 'FeatureCollection', features } });
     map.addLayer({ id: 'tracks', type: 'line', source: 'tracks', layout: { 'line-cap': 'round', 'line-join': 'round', 'line-sort-key': ['case', ['get', 'tram'], 1, 0] },
       paint: { 'line-color': ['get', 'colour'], 'line-width': ['case', ['get', 'tram'], 3, 1.5], 'line-opacity': ['case', ['get', 'tram'], .55, .3] } }, 'stops');
@@ -246,16 +270,30 @@ function positionOf(j, now) {
   const s = j.stops;
   if (now > s[s.length - 1].arr + 60000) return null;
   // not yet reached the first stop we know about: only show it once it is about to arrive there
-  if (now < s[0].arr) return now > s[0].arr - 90000 ? { ll: [s[0].lat, s[0].lon], approach: true, next: s[0] } : null;
+  // k/d: the track between stops k and k+1, and the distance along it in metres (for laying out 3D sections)
+  if (now < s[0].arr) return now > s[0].arr - 90000 ? { ll: [s[0].lat, s[0].lon], approach: true, next: s[0], k: 0, d: 0 } : null;
   for (let k = 0; k < s.length; k++) {
     const a = s[k], b = s[k + 1];
-    if (now <= a.dep || !b) return { ll: [a.lat, a.lon], at: a, next: b, dwell: true };
+    if (now <= a.dep || !b) return { ll: [a.lat, a.lon], at: a, next: b, dwell: true, k: b ? k : k - 1, d: b ? 0 : trackBetween(j.line, s[k - 1], a).len };
     if (now < b.arr) {
-      const t = (now - a.dep) / Math.max(1, b.arr - a.dep);
-      return { ll: along(trackBetween(j.line, a, b), t), prev: a, next: b, t };
+      const t = (now - a.dep) / Math.max(1, b.arr - a.dep), track = trackBetween(j.line, a, b);
+      return { ll: along(track, t), prev: a, next: b, t, k, d: t * track.len };
     }
   }
   return null;
+}
+
+// point d metres along the journey's track from stop k (d may run into the neighbouring stop pairs, or past either end)
+function pointAt(j, k, d) {
+  const s = j.stops, seg = i => trackBetween(j.line, s[i], s[i + 1]);
+  let tr = seg(k);
+  while (d < 0 && k > 0) { k--; tr = seg(k); d += tr.len; }
+  while (d > tr.len && k < s.length - 2) { d -= tr.len; k++; tr = seg(k); }
+  if (d >= 0 && d <= tr.len) return along(tr, tr.len ? d / tr.len : 0);
+  // off the known track: carry on straight along the last 5 m
+  const end = d < 0 ? 0 : 1, p = along(tr, end), q = along(tr, tr.len ? Math.abs(end - Math.min(1, 5 / tr.len)) : end);
+  const over = d < 0 ? -d : d - tr.len, m = haversine(p, q) || 1;
+  return [p[0] + (p[0] - q[0]) / m * over, p[1] + (p[1] - q[1]) / m * over];
 }
 
 // marker element is a plain wrapper (MapLibre owns its transform); the badge inside carries the classes and zoom scaling
@@ -269,17 +307,37 @@ function addVehicle(j, p, cls) {
 }
 function setVehicleClass(j, cls) { j.badge.className = `veh ${j.cat} ${cls}`; j.cls = cls; }
 function removeVehicle(j) { if (j.marker) { j.popup.remove(); j.marker.remove(); j.marker = null; } }
+// 3D layout: p is the vehicle's centre; sections run back from the front, each as [front, rear] on the track
+function vehicle3d(j, p, late) {
+  const type = vehicleType(j); let d = p.d + type.sections.reduce((a, b) => a + b, 0) / 2;
+  const ends = type.sections.map(len => [pointAt(j, p.k, d), pointAt(j, p.k, d -= len)]);
+  return { type, ends, op: j.op, colour: colourFor(j.line), late, dwell: p.dwell, approach: p.approach || j.rt === false };
+}
+
 function popupFor(j) {
   const p = positionOf(j, Date.now()); const nxt = p?.next; const d = nxt?.delay ?? 0;
   return `<div class="popup"><h3>${j.cat === 'tram' ? 'Tram' : 'Bus'} ${j.line} → ${short(j.to)}<br><small>${j.op} · <span class="${d > 0 ? 'late' : 'ontime'}">${d > 0 ? `+${d} min late` : 'on time'}</span>${j.rt === false ? ' · scheduled, no live data' : ''}</small></h3>
     <div class="muted">${p?.dwell ? 'At' : 'Next'}: ${short(p?.dwell ? p.at.name : nxt?.name)}${nxt && !p.dwell ? ` · ${Math.max(0, Math.round((nxt.arr - Date.now()) / 1000))}s` : ''}</div></div>`;
 }
 
+let drawn3D = false;
 function render() {
   const now = Date.now(); let n = 0, late = 0;
+  const in3D = map.getZoom() >= ZOOM_3D, items = [], b = in3D && map.getBounds(), pad = .002;
+  const inView = ll => ll[0] > b.getSouth() - pad && ll[0] < b.getNorth() + pad && ll[1] > b.getWest() - pad && ll[1] < b.getEast() + pad;
+  const live = [], queues = new Map();
   for (const [key, j] of journeys) {
     const p = positionOf(j, now);
     if (!p || now - j.lastSeen > 4 * 60000) { removeVehicle(j); journeys.delete(key); continue; }
+    live.push([j, p]);
+    if (p.dwell && p.next) { const q = `${p.at.id}|${p.next.id}`; if (!queues.has(q)) queues.set(q, []); queues.get(q).push([j, p]); }
+  }
+  // vehicles waiting at the same stop in the same direction queue up behind the first arrival instead of overlapping
+  for (const q of queues.values()) if (q.length > 1) {
+    q.sort((x, y) => x[1].at.arr - y[1].at.arr); let back = 0;
+    for (const [j, p] of q) { if (back) { p.d -= back; p.ll = pointAt(j, p.k, p.d); } back += vehicleType(j).sections.reduce((a, b) => a + b, 0) + 3; }
+  }
+  for (const [j, p] of live) {
     n++;
     const isLate = (p.next?.delay ?? 0) >= 2; if (isLate) late++;
     const cls = `${isLate ? 'late' : ''} ${p.approach || j.rt === false ? 'approach' : ''} ${p.dwell ? 'dwell' : ''}`;
@@ -289,7 +347,9 @@ function render() {
       if (j.cls !== cls) setVehicleClass(j, cls);
       if (j.popup.isOpen() && now - (j.popupAt || 0) > 1000) { j.popup.setHTML(popupFor(j)); j.popupAt = now; }
     }
+    if (in3D && inView(p.ll)) items.push(vehicle3d(j, p, isLate));
   }
+  if (in3D || drawn3D) { drawVehicles(items, now); drawn3D = in3D; map.triggerRepaint(); }
   $('nVeh').textContent = n; $('nLate').textContent = late;
   if (stopsDirty && map.getSource('stops')) { map.getSource('stops').setData(stopsGeoJSON()); stopsDirty = false; }
   requestAnimationFrame(render);
@@ -297,14 +357,19 @@ function render() {
 
 /* markers shrink when zoomed out so meeting trams don't pile up */
 // MapLibre zoom = Leaflet zoom − 1 (512 px tiles): far was Leaflet ≤ 13, mid was Leaflet 14
-const applyZoomClass = () => { const z = map.getZoom(); document.body.classList.toggle('z-far', z < 12.5); document.body.classList.toggle('z-mid', z >= 12.5 && z < 13.5); };
-map.on('zoom', applyZoomClass); applyZoomClass();
+const applyZoomClass = () => { const z = map.getZoom(), c = document.body.classList; c.toggle('z-far', z < 12.5); c.toggle('z-mid', z >= 12.5 && z < 13.5); c.toggle('z3d', z >= ZOOM_3D);
+  // in 3D the label floats just above the roof: ~3.6 m tall, seen at the current pitch
+  const mPerPx = 2 * Math.PI * 6378137 * Math.cos(map.getCenter().lat * Math.PI / 180) / (512 * 2 ** z);
+  document.body.style.setProperty('--lift', `${-Math.round(10 + 3.6 * Math.sin(map.getPitch() * Math.PI / 180) / mPerPx)}px`); };
+map.on('zoom', applyZoomClass); map.on('pitch', applyZoomClass); applyZoomClass();
 
 /* ---------- screensaver chrome ---------- */
 setInterval(() => { $('clock').textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }, 1000);
 let idleT; const wake = () => { document.body.classList.remove('idle'); clearTimeout(idleT); idleT = setTimeout(() => document.body.classList.add('idle'), 20000); };
 ['mousemove', 'keydown', 'touchstart', 'click'].forEach(e => window.addEventListener(e, wake)); wake();
 
+window.baselLive = { map, journeys, positionOf, trackBetween, routes };   // console handle for debugging
+
 /* ---------- go ---------- */
-mapReady.then(() => { setupStopLayer(); return loadRoutes(); }).then(pollLoop);
+mapReady.then(() => { setupStopLayer(); return loadRoutes(); }).then(() => { map.addLayer(vehicleLayer); return pollLoop(); });
 requestAnimationFrame(render);
