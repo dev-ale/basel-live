@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Basel Live · Trams &amp; Buses</title>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/maplibre-gl@6.13.0/dist/maplibre-gl.css" />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
 <style>
   :root { --bg: #0b0e14; --panel: rgba(13, 17, 24, .78); --ink: #eef1f6; --muted: #8b95a7; --line: rgba(255,255,255,.08);
@@ -12,15 +12,12 @@
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); font-family: Inter, system-ui, sans-serif; overflow: hidden; }
   #map { position: absolute; inset: 0; background: var(--bg); }
-  /* dark, desaturated basemap from plain OSM tiles */
-  .leaflet-tile-pane { filter: invert(1) hue-rotate(195deg) saturate(.25) brightness(.72) contrast(1.1); }
-  .leaflet-overlay-pane svg path.track { stroke-linecap: round; stroke-linejoin: round; }
 
   /* HUD (fades out when idle) */
   #hud { position: absolute; top: 18px; left: 18px; z-index: 1000; padding: 14px 18px; border-radius: 16px;
          background: var(--panel); backdrop-filter: blur(10px); border: 1px solid var(--line);
          transition: opacity .8s; }
-  body.idle #hud, body.idle .leaflet-control, body.idle #legend { opacity: 0; pointer-events: none; }
+  body.idle #hud, body.idle .maplibregl-ctrl, body.idle #legend { opacity: 0; pointer-events: none; }
   #hud h1 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: .3px; }
   #hud h1 small { color: var(--muted); font-weight: 500; margin-left: 6px; }
   #clock { font-variant-numeric: tabular-nums; font-size: 34px; font-weight: 700; margin: 4px 0 2px; letter-spacing: -1px; }
@@ -36,11 +33,10 @@
   .chip.bus { border-radius: 11px; }
 
   /* vehicles */
-  .leaflet-marker-icon.veh-icon { background: transparent; border: 0; }
   .veh { position: relative; display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 7px;
          color: #fff; font-weight: 700; font-size: 12px; border: 2px solid rgba(255,255,255,.9);
          box-shadow: 0 0 0 2px rgba(0,0,0,.35), 0 6px 14px rgba(0,0,0,.6); text-shadow: 0 1px 1px rgba(0,0,0,.5);
-         transition: box-shadow .4s; }
+         transition: box-shadow .4s; cursor: pointer; }
   .veh.bus { border-radius: 50%; font-size: 11px; width: 26px; height: 26px; }
   body.z-mid .veh { transform: scale(.8); } body.z-far .veh { transform: scale(.62); }
   .veh.late { box-shadow: 0 0 0 2px rgba(0,0,0,.35), 0 0 0 5px rgba(251,113,133,.45), 0 6px 14px rgba(0,0,0,.6); }
@@ -48,18 +44,15 @@
   .veh.dwell::after { content: ''; position: absolute; inset: -6px; border-radius: inherit; border: 2px solid rgba(255,255,255,.35); animation: ring 2s infinite; }
   @keyframes ring { 0% { transform: scale(.8); opacity: .8; } 100% { transform: scale(1.4); opacity: 0; } }
 
-  /* stations */
-  .leaflet-div-icon { background: transparent; border: 0; }
-  .stop { width: 9px; height: 9px; border-radius: 50%; background: #e8ecf3; border: 2px solid #2a3140; box-shadow: 0 0 6px rgba(0,0,0,.6);
-          cursor: pointer; transition: transform .15s; }
-  .stop:hover { transform: scale(1.6); }
-  .stop.hub { width: 12px; height: 12px; }
-
   /* popups */
-  .leaflet-popup-content-wrapper { background: var(--panel); backdrop-filter: blur(10px); color: var(--ink); border-radius: 14px; border: 1px solid var(--line); box-shadow: 0 16px 40px rgba(0,0,0,.6); }
-  .leaflet-popup-tip { background: #0d1118; }
-  .leaflet-popup-content { margin: 12px 14px; font-size: 13px; min-width: 240px; }
-  .leaflet-popup-close-button { color: var(--muted) !important; }
+  .maplibregl-popup-content { background: var(--panel); backdrop-filter: blur(10px); color: var(--ink); border-radius: 14px; border: 1px solid var(--line);
+                              box-shadow: 0 16px 40px rgba(0,0,0,.6); padding: 12px 14px; font-size: 13px; min-width: 240px; }
+  .maplibregl-popup-anchor-bottom .maplibregl-popup-tip { border-top-color: #0d1118; }
+  .maplibregl-popup-anchor-top .maplibregl-popup-tip { border-bottom-color: #0d1118; }
+  .maplibregl-popup-anchor-left .maplibregl-popup-tip { border-right-color: #0d1118; }
+  .maplibregl-popup-anchor-right .maplibregl-popup-tip { border-left-color: #0d1118; }
+  .maplibregl-popup.tip .maplibregl-popup-content { min-width: 0; padding: 4px 9px; font-size: 12px; font-weight: 500; border-radius: 8px; }
+  .maplibregl-popup-close-button { color: var(--muted); font-size: 18px; padding: 2px 8px; }
   .popup h3 { margin: 0 0 8px; font-size: 14px; font-weight: 600; }
   .popup h3 small { color: var(--muted); font-weight: 500; }
   .dep { display: grid; grid-template-columns: 34px 1fr auto; gap: 8px; align-items: center; padding: 4px 0; border-top: 1px solid var(--line); }
@@ -80,7 +73,9 @@
   <div id="status">Loading…</div>
 </div>
 <div id="legend"></div>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="app.js"></script>
+<script type="importmap">
+{ "imports": { "maplibre-gl": "https://cdn.jsdelivr.net/npm/maplibre-gl@6.13.0/dist/maplibre-gl.mjs" } }
+</script>
+<script type="module" src="app.js"></script>
 </body>
 </html>

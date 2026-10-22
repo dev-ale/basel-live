@@ -18,17 +18,20 @@ const POLL_MS = 40000;             // full round over all hubs
 const FALLBACK_COLOURS = { '1': '#835237', '2': '#A68351', '3': '#324EA1', '6': '#0069B4', '8': '#ED6EA7', '10': '#FECA0A', '11': '#E30613',
   '12': '#9471AD', '14': '#F58220', '15': '#009640', '16': '#AFCA0B', '17': '#00AEEF', '21': '#00A295' };
 
+import * as maplibregl from 'maplibre-gl';
+
 /* ---------- map ---------- */
-const map = L.map('map', { zoomControl: false, attributionControl: true }).setView([47.556, 7.59], 14);
-L.control.zoom({ position: 'bottomright' }).addTo(map);
-L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap · transport.opendata.ch' }).addTo(map);
-const trackLayer = L.layerGroup().addTo(map);
-const stopLayer = L.layerGroup().addTo(map);
-const vehLayer = L.layerGroup().addTo(map);
+// 2D for now: rotation and pitch stay off until the 3D vehicle layer lands
+const map = new maplibregl.Map({ container: 'map', style: 'https://tiles.openfreemap.org/styles/dark', center: [7.59, 47.556], zoom: 13,
+  maxPitch: 0, dragRotate: false, attributionControl: { compact: true, customAttribution: 'transport.opendata.ch' } });
+map.touchZoomRotate.disableRotation(); map.keyboard.disableRotation();
+map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'bottom-right');
+const mapReady = new Promise(r => map.on('load', r));
 
 /* ---------- state ---------- */
-const journeys = new Map();   // key -> { key, line, cat, to, op, stops:[{id,name,lat,lon,arr,dep,delay}], marker, lastSeen }
-const stops = new Map();      // id -> { id, name, lat, lon, marker }
+const journeys = new Map();   // key -> { key, line, cat, to, op, stops:[{id,name,lat,lon,arr,dep,delay}], marker, popup, lastSeen }
+const stops = new Map();      // id -> { id, name, lat, lon, hub }
+let stopsDirty = false;       // stop source is re-uploaded from the render loop, not once per added stop
 const routes = {};            // line -> { colour, graph }
 const pathCache = new Map();  // `${line}|${a}|${b}` -> [[lat,lon],...] or null
 
@@ -98,11 +101,15 @@ async function loadRoutes() {
   try {
     const res = await fetch('routes.json'); if (!res.ok) throw 0;
     const data = await res.json();
+    const features = [];
     for (const [line, r] of Object.entries(data.lines)) {
       routes[line] = { colour: r.colour, graph: buildGraph(r.segments) };
-      const isTram = TRAM_LINES.test(line);
-      for (const seg of r.segments) L.polyline(seg, { color: r.colour || colourFor(line), weight: isTram ? 3 : 1.5, opacity: isTram ? .55 : .3, className: 'track', interactive: false }).addTo(trackLayer);
+      const tram = TRAM_LINES.test(line), colour = r.colour || colourFor(line);
+      for (const seg of r.segments) features.push({ type: 'Feature', properties: { colour, tram }, geometry: { type: 'LineString', coordinates: seg.map(([lat, lon]) => [lon, lat]) } });
     }
+    map.addSource('tracks', { type: 'geojson', data: { type: 'FeatureCollection', features } });
+    map.addLayer({ id: 'tracks', type: 'line', source: 'tracks', layout: { 'line-cap': 'round', 'line-join': 'round', 'line-sort-key': ['case', ['get', 'tram'], 1, 0] },
+      paint: { 'line-color': ['get', 'colour'], 'line-width': ['case', ['get', 'tram'], 3, 1.5], 'line-opacity': ['case', ['get', 'tram'], .55, .3] } }, 'stops');
     const legend = $('legend');
     for (const line of Object.keys(data.lines).filter(l => TRAM_LINES.test(l)).sort((a, b) => (parseInt(a) || 999) - (parseInt(b) || 999)))
       legend.insertAdjacentHTML('beforeend', `<span class="chip" style="background:${colourFor(line)};color:${textOn(colourFor(line))}">${line}</span>`);
@@ -151,14 +158,36 @@ async function fetchHub(name) {
 }
 
 function addStop(s) {
-  s.marker = L.marker([s.lat, s.lon], { icon: L.divIcon({ className: 'leaflet-div-icon', html: `<div class="stop ${s.hub ? 'hub' : ''}" title="${short(s.name)}"></div>`, iconSize: [12, 12], iconAnchor: [6, 6] }), zIndexOffset: 100 }).addTo(stopLayer);
-  s.marker.bindPopup(() => `<div class="popup"><h3>${short(s.name)}<br><small>loading departures…</small></h3></div>`, { maxWidth: 320 });
-  s.marker.on('popupopen', () => showDepartures(s));
-  stops.set(s.id, s); $('nStops').textContent = stops.size;
+  stops.set(s.id, s); stopsDirty = true; $('nStops').textContent = stops.size;
+}
+const stopsGeoJSON = () => ({ type: 'FeatureCollection', features: [...stops.values()].map(s => ({ type: 'Feature', properties: { id: s.id, name: short(s.name), hub: !!s.hub }, geometry: { type: 'Point', coordinates: [s.lon, s.lat] } })) });
+
+function setupStopLayer() {
+  map.addSource('stops', { type: 'geojson', data: stopsGeoJSON(), promoteId: 'id' });
+  const hover = ['boolean', ['feature-state', 'hover'], false];
+  map.addLayer({ id: 'stops', type: 'circle', source: 'stops', paint: {
+    'circle-radius': ['*', ['case', ['get', 'hub'], 4, 2.5], ['case', hover, 1.6, 1]],
+    'circle-color': '#e8ecf3', 'circle-stroke-color': '#2a3140', 'circle-stroke-width': 2 } });
+  const tip = new maplibregl.Popup({ closeButton: false, closeOnClick: false, offset: 10, className: 'tip' });
+  let hovered = null;
+  const setHover = id => { if (hovered != null) map.setFeatureState({ source: 'stops', id: hovered }, { hover: false }); hovered = id; if (id != null) map.setFeatureState({ source: 'stops', id }, { hover: true }); };
+  map.on('mousemove', 'stops', e => {
+    const f = e.features[0]; map.getCanvas().style.cursor = 'pointer';
+    if (f.id !== hovered) { setHover(f.id); tip.setLngLat(f.geometry.coordinates).setText(f.properties.name).addTo(map); }
+  });
+  map.on('mouseleave', 'stops', () => { map.getCanvas().style.cursor = ''; setHover(null); tip.remove(); });
+  map.on('click', 'stops', e => {
+    if (e.originalEvent.target.closest('.veh')) return;   // vehicle badges sit above stops: their own popup wins
+    const s = stops.get(e.features[0].properties.id); if (!s) return;
+    tip.remove();
+    const popup = new maplibregl.Popup({ maxWidth: '320px', offset: 8 }).setLngLat([s.lon, s.lat])
+      .setHTML(`<div class="popup"><h3>${short(s.name)}<br><small>loading departures…</small></h3></div>`).addTo(map);
+    showDepartures(s, popup);
+  });
 }
 
-async function showDepartures(s) {
-  const render = rows => s.marker.setPopupContent(`<div class="popup"><h3>${short(s.name)}<br><small>next departures · live</small></h3>${rows || '<div class="muted">No departures found</div>'}</div>`);
+async function showDepartures(s, popup) {
+  const render = rows => popup.setHTML(`<div class="popup"><h3>${short(s.name)}<br><small>next departures · live</small></h3>${rows || '<div class="muted">No departures found</div>'}</div>`);
   try {
     const res = await fetch(`${API}?id=${s.id}&limit=8`); const data = await res.json();
     const now = Date.now();
@@ -186,7 +215,7 @@ async function pollServer() {
     if (ex) { ex.stops = v.stops; ex.rt = v.rt; ex.lastSeen = now; }
     else journeys.set(v.key, { ...v, lastSeen: now });
   }
-  for (const [k, j] of journeys) if (!seen.has(k)) { if (j.marker) vehLayer.removeLayer(j.marker); journeys.delete(k); }
+  for (const [k, j] of journeys) if (!seen.has(k)) { removeVehicle(j); journeys.delete(k); }
   const rt = data.rt_error ? `RT error: ${data.rt_error}` : `GTFS-RT ${data.rt_age ?? '?'}s old`;
   $('status').className = data.rt_error ? 'err' : ''; $('status').textContent = `Live · ${rt} · ${new Date().toLocaleTimeString()}`;
 }
@@ -229,11 +258,17 @@ function positionOf(j, now) {
   return null;
 }
 
-function vehicleIcon(j, cls) {
-  const c = colourFor(j.line);
-  return L.divIcon({ className: 'veh-icon', iconSize: [28, 28], iconAnchor: [14, 14],
-    html: `<div class="veh ${j.cat} ${cls}" style="background:${c};color:${textOn(c)}">${j.line}</div>` });
+// marker element is a plain wrapper (MapLibre owns its transform); the badge inside carries the classes and zoom scaling
+function addVehicle(j, p, cls) {
+  const el = document.createElement('div'), badge = el.appendChild(document.createElement('div')), c = colourFor(j.line);
+  badge.style.background = c; badge.style.color = textOn(c); badge.textContent = j.line;
+  j.badge = badge; setVehicleClass(j, cls);
+  j.popup = new maplibregl.Popup({ offset: 16, maxWidth: '320px' });
+  j.popup.on('open', () => { j.popup.setHTML(popupFor(j)); j.popupAt = Date.now(); });   // on() returns a subscription in MapLibre 6, not the popup
+  j.marker = new maplibregl.Marker({ element: el }).setLngLat([p.ll[1], p.ll[0]]).setPopup(j.popup).addTo(map);
 }
+function setVehicleClass(j, cls) { j.badge.className = `veh ${j.cat} ${cls}`; j.cls = cls; }
+function removeVehicle(j) { if (j.marker) { j.popup.remove(); j.marker.remove(); j.marker = null; } }
 function popupFor(j) {
   const p = positionOf(j, Date.now()); const nxt = p?.next; const d = nxt?.delay ?? 0;
   return `<div class="popup"><h3>${j.cat === 'tram' ? 'Tram' : 'Bus'} ${j.line} → ${short(j.to)}<br><small>${j.op} · <span class="${d > 0 ? 'late' : 'ontime'}">${d > 0 ? `+${d} min late` : 'on time'}</span>${j.rt === false ? ' · scheduled, no live data' : ''}</small></h3>
@@ -244,24 +279,26 @@ function render() {
   const now = Date.now(); let n = 0, late = 0;
   for (const [key, j] of journeys) {
     const p = positionOf(j, now);
-    if (!p || now - j.lastSeen > 4 * 60000) { if (j.marker) vehLayer.removeLayer(j.marker); journeys.delete(key); continue; }
+    if (!p || now - j.lastSeen > 4 * 60000) { removeVehicle(j); journeys.delete(key); continue; }
     n++;
     const isLate = (p.next?.delay ?? 0) >= 2; if (isLate) late++;
     const cls = `${isLate ? 'late' : ''} ${p.approach || j.rt === false ? 'approach' : ''} ${p.dwell ? 'dwell' : ''}`;
-    if (!j.marker) { j.marker = L.marker(p.ll, { icon: vehicleIcon(j, cls), zIndexOffset: 500 }).addTo(vehLayer); j.marker.bindPopup(() => popupFor(j)); j.cls = cls; }
+    if (!j.marker) addVehicle(j, p, cls);
     else {
-      j.marker.setLatLng(p.ll);
-      if (j.cls !== cls) { j.marker.setIcon(vehicleIcon(j, cls)); j.cls = cls; }
-      if (j.marker.isPopupOpen() && now - (j.popupAt || 0) > 1000) { j.marker.setPopupContent(popupFor(j)); j.popupAt = now; }
+      j.marker.setLngLat([p.ll[1], p.ll[0]]);
+      if (j.cls !== cls) setVehicleClass(j, cls);
+      if (j.popup.isOpen() && now - (j.popupAt || 0) > 1000) { j.popup.setHTML(popupFor(j)); j.popupAt = now; }
     }
   }
   $('nVeh').textContent = n; $('nLate').textContent = late;
+  if (stopsDirty && map.getSource('stops')) { map.getSource('stops').setData(stopsGeoJSON()); stopsDirty = false; }
   requestAnimationFrame(render);
 }
 
 /* markers shrink when zoomed out so meeting trams don't pile up */
-const applyZoomClass = () => { const z = map.getZoom(); document.body.classList.toggle('z-far', z <= 13); document.body.classList.toggle('z-mid', z === 14); };
-map.on('zoomend', applyZoomClass); applyZoomClass();
+// MapLibre zoom = Leaflet zoom − 1 (512 px tiles): far was Leaflet ≤ 13, mid was Leaflet 14
+const applyZoomClass = () => { const z = map.getZoom(); document.body.classList.toggle('z-far', z < 12.5); document.body.classList.toggle('z-mid', z >= 12.5 && z < 13.5); };
+map.on('zoom', applyZoomClass); applyZoomClass();
 
 /* ---------- screensaver chrome ---------- */
 setInterval(() => { $('clock').textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }, 1000);
@@ -269,5 +306,5 @@ let idleT; const wake = () => { document.body.classList.remove('idle'); clearTim
 ['mousemove', 'keydown', 'touchstart', 'click'].forEach(e => window.addEventListener(e, wake)); wake();
 
 /* ---------- go ---------- */
-loadRoutes().then(pollLoop);
+mapReady.then(() => { setupStopLayer(); return loadRoutes(); }).then(pollLoop);
 requestAnimationFrame(render);

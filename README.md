@@ -27,7 +27,7 @@ Switzerland publishes no vehicle GPS feed, so positions come from the national G
 
 ## Setup (5 minutes)
 
-You need **Python 3.9+** and a free **opentransportdata.swiss** token. Nothing else: Leaflet loads from a CDN, the server is Python standard library.
+You need **Python 3.9+** and a free **opentransportdata.swiss** token. Nothing else: MapLibre loads from a CDN, the server is Python standard library.
 
 ### 1. Clone
 
@@ -77,7 +77,7 @@ The page then falls back to polling [transport.opendata.ch](https://transport.op
 
 ```
 opentransportdata.swiss ──GTFS zip──▶ prepare_gtfs.py ──▶ gtfs/basel.json  (BVB+BLT timetable, 83 MB)
-                        ──GTFS-RT ──▶ server.py  ──/vehicles.json──▶ app.js ──▶ Leaflet map
+                        ──GTFS-RT ──▶ server.py  ──/vehicles.json──▶ app.js ──▶ MapLibre map
 OpenStreetMap (Overpass) ──route relations──▶ build_routes.py ──▶ routes.json (tracks + colours)
 transport.opendata.ch ◀──station click── app.js
 ```
