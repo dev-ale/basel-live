@@ -7,7 +7,7 @@ Streams the big files (trips 390 MB, stop_times 3.6 GB) straight out of the zip;
 Output layout (compact on purpose, the server parses stop times lazily):
   routes:   {route_id: {line, type, agency}}
   trips:    {trip_id: [route_id, service_id, headsign]}
-  stops:    [[didok, name, lat, lon], ...]           (index = stop idx)
+  stops:    [[didok, name, lat, lon, stop_id], ...]  (index = stop idx)
   st:       {trip_id: "stopidx,arr,dep;stopidx,arr,dep;..."}   seconds since service-day midnight, in sequence order
   calendar: {service_id: {days:[7 bools], start, end, add:[dates], remove:[dates]}}
 """
@@ -54,7 +54,7 @@ stops, stop_idx = [], {}
 for r in rows('stops.txt'):
     if r['stop_id'] in stop_ids:
         stop_idx[r['stop_id']] = len(stops)
-        stops.append([r.get('didok') or r['stop_id'].split(':')[0], r['stop_name'], round(float(r['stop_lat']), 6), round(float(r['stop_lon']), 6)])
+        stops.append([r.get('didok') or r['stop_id'].split(':')[0], r['stop_name'], round(float(r['stop_lat']), 6), round(float(r['stop_lon']), 6), r['stop_id']])
 log('stops', len(stops))
 
 st = {}

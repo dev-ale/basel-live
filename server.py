@@ -47,12 +47,13 @@ def service_runs(sid, day):
 class Index:
     """Scheduled trips around now, as absolute epoch seconds. Rebuilt every 10 min."""
     def __init__(self):
-        self.trips = {}; self.built = 0; self.lock = threading.Lock()
+        self.trips = {}; self.by_start = {}; self.built = 0; self.lock = threading.Lock()
     def build(self):
         now = datetime.now(TZ)
-        out = {}
+        out, by_start = {}, {}
         for day in (now.date() - timedelta(days=1), now.date()):
             midnight = datetime(day.year, day.month, day.day, tzinfo=TZ).timestamp()
+            date = day.strftime('%Y%m%d')
             for tid, (rid, sid, headsign) in G['trips'].items():
                 if not service_runs(sid, day): continue
                 s = G['st'].get(tid)
@@ -61,9 +62,11 @@ class Index:
                 for part in s.split(';'):
                     i, a, d = part.split(','); stops.append([int(i), midnight + int(a), midnight + int(d)])
                 if stops[-1][1] < now.timestamp() - 3 * 3600 or stops[0][2] > now.timestamp() + 3 * 3600: continue
-                out[tid] = {'route': rid, 'headsign': headsign, 'stops': stops}
+                key = f'{tid}|{date}'  # same trip_id can run yesterday after midnight and today
+                out[key] = {'route': rid, 'headsign': headsign, 'stops': stops}
+                by_start.setdefault((rid, date, int(stops[0][2] - midnight)), []).append(key)
         with self.lock:
-            self.trips = out; self.built = time.time()
+            self.trips = out; self.by_start = by_start; self.built = time.time()
         log(f'schedule index: {len(out)} trips within ±3 h')
 
 IDX = Index(); IDX.build()
@@ -71,17 +74,39 @@ IDX = Index(); IDX.build()
 # ---------------------------------------------------------------- GTFS-RT
 RT = {'updates': {}, 'cancelled': set(), 'fetched': 0, 'error': None, 'entities': 0}
 
+def hms(s):
+    h, m, sec = s.split(':'); return int(h) * 3600 + int(m) * 60 + int(sec)
+
+def stop_fits(stops, stu):
+    seq, sid = stu.get('stopSequence'), stu.get('stopId')
+    if seq is None or sid is None: return True
+    if not 0 < seq <= len(stops): return False
+    st = STOPS[stops[seq - 1][0]]
+    return len(st) < 5 or st[4] == sid  # basel.json from before stop ids were stored: trust the start time
+
+def match_trip(trip, stus, active, by_start):
+    """GTFS-RT trip_ids are renumbered with every timetable publication (twice a week), so with an older
+    basel.json the same id points at a different trip. Match on route + service day + start time instead,
+    and use the stop ids to pick between trips leaving at the same time (e.g. opposite directions)."""
+    try: k = (trip['routeId'], trip['startDate'], hms(trip['startTime']))
+    except (KeyError, ValueError): return None
+    for key in by_start.get(k, ()):
+        if all(stop_fits(active[key]['stops'], stu) for stu in stus): return key
+    return None
+
 def fetch_rt():
     req = urllib.request.Request(RT_URL, headers={'Authorization': TOKEN, 'User-Agent': 'basel-live-poc'})
     with urllib.request.urlopen(req, timeout=60) as r:
         data = json.load(r)
-    updates, cancelled, n = {}, set(), 0
-    with IDX.lock: active = IDX.trips
+    updates, cancelled, n, missed = {}, set(), 0, 0
+    with IDX.lock: active, by_start = IDX.trips, IDX.by_start
     for e in data.get('entity', []):
         tu = e.get('tripUpdate');
         if not tu: continue
-        tid = tu.get('trip', {}).get('tripId')
-        if tid not in active: continue
+        tid = match_trip(tu.get('trip', {}), tu.get('stopTimeUpdate', []), active, by_start)
+        if tid is None:
+            if tu.get('trip', {}).get('routeId') in G['routes']: missed += 1
+            continue
         n += 1
         if tu['trip'].get('scheduleRelationship') == 'CANCELED': cancelled.add(tid); continue
         upd = {}
@@ -91,7 +116,7 @@ def fetch_rt():
             upd[int(seq)] = (stu.get('arrival', {}).get('delay'), stu.get('departure', {}).get('delay'), stu.get('scheduleRelationship', 'SCHEDULED'))
         updates[tid] = upd
     RT.update(updates=updates, cancelled=cancelled, fetched=time.time(), error=None, entities=n)
-    log(f'gtfs-rt: {len(data.get("entity", []))} entities, {n} for BVB/BLT, {len(cancelled)} cancelled')
+    log(f'gtfs-rt: {len(data.get("entity", []))} entities, {n} for BVB/BLT, {len(cancelled)} cancelled, {missed} BVB/BLT unmatched')
 
 def rt_loop():
     while True:
@@ -143,7 +168,7 @@ def stops_json():
     global STOPS_JSON
     if STOPS_JSON is None:
         seen = {}
-        for didok, name, lat, lon in STOPS:
+        for didok, name, lat, lon, *_ in STOPS:
             if didok not in seen: seen[didok] = {'id': didok, 'name': name, 'lat': lat, 'lon': lon}
         STOPS_JSON = json.dumps(list(seen.values()), ensure_ascii=False).encode()
     return STOPS_JSON
