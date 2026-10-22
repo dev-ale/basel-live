@@ -1,7 +1,7 @@
 <h1 align="center">🚋 Basel Live</h1>
 
 <p align="center">
-  Every tram and bus in Basel, moving live on a map.<br>
+  Every tram and bus in Basel, moving live on a map, or in a photorealistic 3D city.<br>
   Real tracks, official line colours, real-life delays.
 </p>
 
@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <b>183 vehicles on a Monday evening · updated every 30 s · zero npm dependencies</b>
+  <b>183 vehicles on a Monday evening · updated every 30 s · no build step, no npm dependencies</b>
 </p>
 
 ---
@@ -75,6 +75,10 @@ The page then falls back to polling [transport.opendata.ch](https://transport.op
 
 ## 3D mode
 
+<p align="center">
+  <img src="docs/screenshot-3d.jpg" alt="3D mode: a green BVB tram 6 crossing the Mittlere Brücke over the Rhine, Kleinbasel waterfront ahead" width="100%">
+</p>
+
 Click **Enter 3D Basel** for a CesiumJS world with the same live vehicles as articulated 3D models that follow the real track, the real sun over Basel (shadows, night lighting, a ☀︎ slider to preview other times of day) and a ride-along camera: click any tram for chase or cab view. Idle for 20 s and it rides a random tram on its own.
 
 - **Photorealistic city** (recommended): create a free [Cesium ion](https://ion.cesium.com/signup) account, add *Google Photorealistic 3D Tiles* from the Asset Depot to your assets, and put your token in `.env`:
@@ -97,9 +101,11 @@ Vehicle heights come from the rendered 3D surface, sampled every 8 m along each 
 
 ```
 opentransportdata.swiss ──GTFS zip──▶ prepare_gtfs.py ──▶ gtfs/basel.json  (BVB+BLT timetable, 83 MB)
-                        ──GTFS-RT ──▶ server.py  ──/vehicles.json──▶ app.js ──▶ Leaflet map
+                        ──GTFS-RT ──▶ server.py  ──/vehicles.json──▶ app.js ──▶ Leaflet map (2D)
+                                                                       └──▶ world3d.js ──▶ CesiumJS (3D)
 OpenStreetMap (Overpass) ──route relations──▶ build_routes.py ──▶ routes.json (tracks + colours)
 transport.opendata.ch ◀──station click── app.js
+Cesium ion (Google 3D Tiles) / swisstopo ──3D city, terrain──▶ world3d.js
 ```
 
 | Piece | Role |
@@ -107,6 +113,8 @@ transport.opendata.ch ◀──station click── app.js
 | `prepare_gtfs.py` | Streams the 4.5 GB Swiss GTFS out of the zip and keeps only BVB/BLT: 59 routes, ~188k trips/year, 1451 platforms. |
 | `server.py` | Serves the page. Every 30 s it fetches the national GTFS-RT feed (one request, ~10k trips for all of Switzerland), keeps the Basel ones and merges the delays into today's schedule. Exposes `/vehicles.json` and `/stops.json`. |
 | `app.js` | Polls `/vehicles.json` every 10 s and animates each vehicle between its last and next stop along the track. Each line's OSM ways form a graph; the vehicle follows the shortest path between the two stops. |
+| `world3d.js` | 3D mode. Lazy-loads CesiumJS, streams the 3D city, places each vehicle's car sections along the track with heights sampled from the rendered surface, and runs the sun, night lighting and ride-along camera. |
+| `vehicleModels.js` | Builds the tram and bus models as glTF in code (no downloads): car body sections, cabs, windows, doors, liveries, lights, pantograph. |
 | `build_routes.py` | Turns an Overpass dump of route relations into `routes.json`. Already included for Basel; see below to refresh. |
 
 ## Refresh the track geometry
