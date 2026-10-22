@@ -2,3 +2,4 @@
 gtfs/
 osm_*.json
 routes.log
+vendor/

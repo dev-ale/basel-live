@@ -177,6 +177,9 @@ def stops_json():
 class H(SimpleHTTPRequestHandler):
     def __init__(self, *a, **k): super().__init__(*a, directory=HERE, **k)
     def log_message(self, *a): pass
+    def end_headers(self):
+        if not self.path.startswith(('/vehicles.json', '/stops.json', '/config.json')): self.send_header('Cache-Control', 'no-cache')  # always revalidate app files
+        super().end_headers()
     def send_json(self, body: bytes):
         self.send_response(200); self.send_header('Content-Type', 'application/json; charset=utf-8')
         self.send_header('Cache-Control', 'no-store'); self.send_header('Content-Length', str(len(body))); self.end_headers()
@@ -187,6 +190,7 @@ class H(SimpleHTTPRequestHandler):
                     'rt_error': RT['error'], 'vehicles': vehicles()}
             return self.send_json(json.dumps(body, ensure_ascii=False).encode())
         if self.path.startswith('/stops.json'): return self.send_json(stops_json())
+        if self.path.startswith('/config.json'): return self.send_json(json.dumps({'cesiumIonToken': os.environ.get('CESIUM_ION_TOKEN', '')}).encode())
         if self.path in ('/.env', '/gtfs/basel.json'): self.send_error(403); return
         return super().do_GET()
 

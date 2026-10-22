@@ -99,7 +99,7 @@ async function loadRoutes() {
     const res = await fetch('routes.json'); if (!res.ok) throw 0;
     const data = await res.json();
     for (const [line, r] of Object.entries(data.lines)) {
-      routes[line] = { colour: r.colour, graph: buildGraph(r.segments) };
+      routes[line] = { colour: r.colour, segments: r.segments, graph: buildGraph(r.segments) };
       const isTram = TRAM_LINES.test(line);
       for (const seg of r.segments) L.polyline(seg, { color: r.colour || colourFor(line), weight: isTram ? 3 : 1.5, opacity: isTram ? .55 : .3, className: 'track', interactive: false }).addTo(trackLayer);
     }
@@ -217,13 +217,13 @@ function positionOf(j, now) {
   const s = j.stops;
   if (now > s[s.length - 1].arr + 60000) return null;
   // not yet reached the first stop we know about: only show it once it is about to arrive there
-  if (now < s[0].arr) return now > s[0].arr - 90000 ? { ll: [s[0].lat, s[0].lon], approach: true, next: s[0] } : null;
+  if (now < s[0].arr) return now > s[0].arr - 90000 ? { ll: [s[0].lat, s[0].lon], approach: true, next: s[0], k: 0 } : null;
   for (let k = 0; k < s.length; k++) {
     const a = s[k], b = s[k + 1];
-    if (now <= a.dep || !b) return { ll: [a.lat, a.lon], at: a, next: b, dwell: true };
+    if (now <= a.dep || !b) return { ll: [a.lat, a.lon], at: a, next: b, dwell: true, k };
     if (now < b.arr) {
       const t = (now - a.dep) / Math.max(1, b.arr - a.dep);
-      return { ll: along(trackBetween(j.line, a, b), t), prev: a, next: b, t };
+      return { ll: along(trackBetween(j.line, a, b), t), prev: a, next: b, t, k };
     }
   }
   return null;
@@ -241,12 +241,13 @@ function popupFor(j) {
 }
 
 function render() {
-  const now = Date.now(); let n = 0, late = 0;
+  const now = Date.now(), in3d = typeof world3d !== 'undefined' && world3d.active, rows = []; let n = 0, late = 0;
   for (const [key, j] of journeys) {
     const p = positionOf(j, now);
     if (!p || now - j.lastSeen > 4 * 60000) { if (j.marker) vehLayer.removeLayer(j.marker); journeys.delete(key); continue; }
     n++;
     const isLate = (p.next?.delay ?? 0) >= 2; if (isLate) late++;
+    if (in3d) { rows.push({ j, p, isLate }); continue; }
     const cls = `${isLate ? 'late' : ''} ${p.approach || j.rt === false ? 'approach' : ''} ${p.dwell ? 'dwell' : ''}`;
     if (!j.marker) { j.marker = L.marker(p.ll, { icon: vehicleIcon(j, cls), zIndexOffset: 500 }).addTo(vehLayer); j.marker.bindPopup(() => popupFor(j)); j.cls = cls; }
     else {
@@ -255,6 +256,7 @@ function render() {
       if (j.marker.isPopupOpen() && now - (j.popupAt || 0) > 1000) { j.marker.setPopupContent(popupFor(j)); j.popupAt = now; }
     }
   }
+  if (in3d) world3d.frame(rows, now);
   $('nVeh').textContent = n; $('nLate').textContent = late;
   requestAnimationFrame(render);
 }
@@ -267,6 +269,13 @@ map.on('zoomend', applyZoomClass); applyZoomClass();
 setInterval(() => { $('clock').textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }, 1000);
 let idleT; const wake = () => { document.body.classList.remove('idle'); clearTimeout(idleT); idleT = setTimeout(() => document.body.classList.add('idle'), 20000); };
 ['mousemove', 'keydown', 'touchstart', 'click'].forEach(e => window.addEventListener(e, wake)); wake();
+
+/* ---------- 2D ⇄ 3D ---------- */
+$('btn3d').onclick = async () => {
+  try { await world3d.enter(map.getCenter(), map.getZoom()); }
+  catch (e) { console.error(e); $('worldStatus').textContent = `3D failed: ${e.message}`; }
+};
+$('btn2d').onclick = () => { const ll = world3d.exit(); if (ll) map.setView(ll, map.getZoom()); };
 
 /* ---------- go ---------- */
 loadRoutes().then(pollLoop);

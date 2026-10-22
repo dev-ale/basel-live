@@ -73,6 +73,26 @@ python3 -m http.server 8765
 The page then falls back to polling [transport.opendata.ch](https://transport.opendata.ch) stationboards for 24 hub stops. You get real delays but only the vehicles passing those hubs, roughly a third of the network.
 </details>
 
+## 3D mode
+
+Click **Enter 3D Basel** for a CesiumJS world with the same live vehicles as articulated 3D models that follow the real track, the real sun over Basel (shadows, night lighting, a ☀︎ slider to preview other times of day) and a ride-along camera: click any tram for chase or cab view. Idle for 20 s and it rides a random tram on its own.
+
+- **Photorealistic city** (recommended): create a free [Cesium ion](https://ion.cesium.com/signup) account, add *Google Photorealistic 3D Tiles* from the Asset Depot to your assets, and put your token in `.env`:
+
+  ```bash
+  echo "CESIUM_ION_TOKEN=paste-your-token-here" >> .env
+  ```
+
+  The token is passed to the browser, which needs it to stream the tiles. The free Community plan covers about 1,000 3D sessions a month for personal use.
+- **Without a token** it falls back to swisstopo open data: swissBUILDINGS3D, swissTLM3D, terrain and SWISSIMAGE (untextured buildings).
+- **Faster start (optional):** keep a local copy of CesiumJS (22 MB, git-ignored) instead of loading it from the CDN:
+
+  ```bash
+  npm pack cesium@1.144.0 && mkdir -p vendor/cesium && tar -xzf cesium-1.144.0.tgz -C vendor/cesium --strip-components=3 package/Build/Cesium && rm cesium-1.144.0.tgz
+  ```
+
+Vehicle heights come from the rendered 3D surface, sampled every 8 m along each track near the camera, so trams cross bridges on the deck and pass under overpasses.
+
 ## How it works
 
 ```
@@ -114,6 +134,7 @@ The real-time feed covers all of Switzerland. Change `AGENCY_RE` in `prepare_gtf
 - Timetable and real-time data: [opentransportdata.swiss](https://opentransportdata.swiss) (Open Data, free token required for GTFS-RT).
 - Tracks, colours and basemap: © [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors, ODbL.
 - Station departures: [transport.opendata.ch](https://transport.opendata.ch).
+- 3D: [CesiumJS](https://cesium.com/platform/cesiumjs/) (Apache 2.0); Google Photorealistic 3D Tiles via Cesium ion; © swisstopo 3D data, terrain and SWISSIMAGE.
 - Line colours are the official BVB/BLT colours as tagged in OSM; buses are grey as in OSM.
 
 ## Roadmap
