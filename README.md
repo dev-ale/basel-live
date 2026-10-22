@@ -21,7 +21,10 @@
 - **Official line colours** (tram 8 is pink, 11 is red, 10 is yellow…) straight from the OpenStreetMap route relations.
 - **Real delays**: a tram running 3 minutes late is 3 minutes behind on the map. Late vehicles get a red glow, cancelled trips disappear.
 - **Click any station** for its next 8 departures with live delays.
-- **Screensaver mode**: the HUD fades out after 20 seconds without input.
+- **3D from zoom 16**: tilt with right-drag (or ctrl-drag) and every tram and bus becomes a 3D model in its operator's livery, articulated sections bending through the curves, with the line colour along its flank. Flexity, Combino, Tango, Tina and Citaro are modelled at their real lengths; which one runs a trip is a stable guess, since the feed doesn't say.
+- **Aerial photos**: the *Aerial* button swaps the dark map for swisstopo's 10 cm SWISSIMAGE photos (Swiss side only). The dark map gets extruded 3D buildings instead.
+- **Real light**: the 3D scene is lit by the sun's actual position over Basel; after dusk the street lights take over and the passenger compartments glow.
+- **Screensaver mode**: the HUD fades out after 20 seconds without input, and after 45 seconds the camera starts a tour, gliding after one tram after another (*Tour* button to turn it off). The view is kept in the URL, so a link opens the same spot.
 
 Switzerland publishes no vehicle GPS feed, so positions come from the national GTFS-RT *trip updates* (per-stop delays) applied to the timetable. In practice this is within a few dozen metres of the real vehicle.
 
@@ -86,7 +89,10 @@ transport.opendata.ch ◀──station click── app.js
 |---|---|
 | `prepare_gtfs.py` | Streams the 4.5 GB Swiss GTFS out of the zip and keeps only BVB/BLT: 59 routes, ~188k trips/year, 1451 platforms. |
 | `server.py` | Serves the page. Every 30 s it fetches the national GTFS-RT feed (one request, ~10k trips for all of Switzerland), keeps the Basel ones and merges the delays into today's schedule. Exposes `/vehicles.json` and `/stops.json`. |
-| `app.js` | Polls `/vehicles.json` every 10 s and animates each vehicle between its last and next stop along the track. Each line's OSM ways form a graph; the vehicle follows the shortest path between the two stops. |
+| `app.js` | Polls `/vehicles.json` every 10 s and animates each vehicle between its last and next stop along the track. Each line's OSM ways form a graph; the vehicle follows the shortest path between the two stops (falling back to the whole tram or bus network for diversions). |
+| `vehicles3d.js` | The 3D layer: a MapLibre custom layer drawn with three.js. Vehicle sections are built procedurally per type and drawn instanced, ~100 draw calls for the whole fleet. |
+| `models/` | Optional real glTF models replacing the procedural ones; see [models/README.md](models/README.md). |
+| `spike3d.html` | The Phase 0 test page: one tram at Barfüsserplatz with live scale, heading and float32-jitter checks. |
 | `build_routes.py` | Turns an Overpass dump of route relations into `routes.json`. Already included for Basel; see below to refresh. |
 
 ## Refresh the track geometry
@@ -112,7 +118,9 @@ The real-time feed covers all of Switzerland. Change `AGENCY_RE` in `prepare_gtf
 ## Data sources & licences
 
 - Timetable and real-time data: [opentransportdata.swiss](https://opentransportdata.swiss) (Open Data, free token required for GTFS-RT).
-- Tracks, colours and basemap: © [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors, ODbL.
+- Tracks, colours and basemap: © [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors, ODbL; vector tiles by [OpenFreeMap](https://openfreemap.org).
+- Aerial photos: © [swisstopo](https://www.swisstopo.admin.ch/) SWISSIMAGE, free geodata of the Swiss Confederation.
+- Rendering: [MapLibre GL JS](https://maplibre.org) and [three.js](https://threejs.org), loaded from jsDelivr.
 - Station departures: [transport.opendata.ch](https://transport.opendata.ch).
 - Line colours are the official BVB/BLT colours as tagged in OSM; buses are grey as in OSM.
 

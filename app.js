@@ -26,7 +26,10 @@ const ZOOM_3D = 16;   // from here vehicles are 3D models (a tram is ~60 px long
 const map = new maplibregl.Map({ container: 'map', style: 'https://tiles.openfreemap.org/styles/dark', center: [7.59, 47.556], zoom: 13,
   maxPitch: 75, hash: true, attributionControl: false });
 // credits for any glTF vehicle models (models/manifest.json) join the map attribution
-loadModels().then(credits => map.addControl(new maplibregl.AttributionControl({ compact: true, customAttribution: ['transport.opendata.ch', ...credits] })));
+loadModels().then(credits => {
+  map.addControl(new maplibregl.AttributionControl({ compact: true, customAttribution: ['transport.opendata.ch', ...credits] }));
+  document.querySelector('.maplibregl-ctrl-attrib')?.classList.remove('maplibregl-compact-show');   // start folded into the (i) button
+});
 map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'bottom-right');
 const mapReady = new Promise(r => map.on('load', r));
 
@@ -325,6 +328,7 @@ function popupFor(j) {
 let drawn3D = false;
 function render() {
   const now = Date.now(); let n = 0, late = 0;
+  tourStep(now);
   const in3D = map.getZoom() >= ZOOM_3D, items = [], b = in3D && map.getBounds(), pad = .002;
   const inView = ll => ll[0] > b.getSouth() - pad && ll[0] < b.getNorth() + pad && ll[1] > b.getWest() - pad && ll[1] < b.getEast() + pad;
   const live = [], queues = new Map();
@@ -365,14 +369,81 @@ const applyZoomClass = () => { const z = map.getZoom(), c = document.body.classL
   document.body.style.setProperty('--lift', `${-Math.round(10 + 3.6 * Math.sin(map.getPitch() * Math.PI / 180) / mPerPx)}px`); };
 map.on('zoom', applyZoomClass); map.on('pitch', applyZoomClass); applyZoomClass();
 
+/* ---------- scenery: 3D buildings, aerial photos ---------- */
+const pref = (k, d) => { try { const v = localStorage.getItem(`basel-live:${k}`); return v == null ? d : v === '1'; } catch { return d; } };
+const savePref = (k, v) => { try { localStorage.setItem(`basel-live:${k}`, v ? '1' : '0'); } catch {} };
+let aerial = pref('aerial', false), touring = pref('tour', true);
+
+let baseShapes = [];   // the base map's own fills and lines: hidden under aerial photos, which show the real thing
+function setupScenery() {
+  const layers = map.getStyle().layers, labels = layers.find(l => l.type === 'symbol')?.id;
+  baseShapes = layers.filter(l => l.type === 'fill' || l.type === 'line').map(l => l.id);
+  // swisstopo SWISSIMAGE: free aerial photos, 10 cm in Basel; Switzerland only (Germany and France stay map)
+  map.addSource('aerial', { type: 'raster', tileSize: 256, maxzoom: 20, attribution: '© <a href="https://www.swisstopo.admin.ch/">swisstopo</a> SWISSIMAGE',
+    tiles: ['https://wmts.geo.admin.ch/1.0.0/ch.swisstopo.swissimage/default/current/3857/{z}/{x}/{y}.jpeg'] });
+  map.addLayer({ id: 'aerial', type: 'raster', source: 'aerial', paint: { 'raster-brightness-max': .92, 'raster-saturation': -.1, 'raster-fade-duration': 200 } }, layers.find(l => l.type !== 'background')?.id);
+  map.addLayer({ id: 'buildings3d', type: 'fill-extrusion', source: 'openmaptiles', 'source-layer': 'building', minzoom: 15, paint: {
+    'fill-extrusion-color': '#1c2129', 'fill-extrusion-opacity': .88,
+    'fill-extrusion-height': ['interpolate', ['linear'], ['zoom'], 15, 0, 16, ['coalesce', ['get', 'render_height'], 8]],
+    'fill-extrusion-base': ['coalesce', ['get', 'render_min_height'], 0] } }, labels);
+  applyScenery();
+}
+// aerial photos replace the dark map and its extruded buildings (photo roofs and extrusions never line up)
+function applyScenery() {
+  map.setLayoutProperty('aerial', 'visibility', aerial ? 'visible' : 'none');
+  for (const id of ['buildings3d', ...baseShapes]) map.setLayoutProperty(id, 'visibility', aerial ? 'none' : 'visible');
+  document.querySelectorAll('.scenery button').forEach(b => b.classList.toggle('on', b.dataset.k === 'aerial' ? aerial : touring));
+}
+class SceneryControl {
+  onAdd() {
+    this.el = document.createElement('div'); this.el.className = 'maplibregl-ctrl maplibregl-ctrl-group scenery';
+    this.el.innerHTML = `<button data-k="aerial" title="Aerial photos (swisstopo)">Aerial</button><button data-k="tour" title="Follow trams when idle">Tour</button>`;
+    this.el.addEventListener('click', e => {
+      const k = e.target.dataset?.k; if (!k) return;
+      if (k === 'aerial') { aerial = !aerial; savePref('aerial', aerial); } else { touring = !touring; savePref('tour', touring); }
+      applyScenery();
+    });
+    return this.el;
+  }
+  onRemove() { this.el.remove(); }
+}
+map.addControl(new SceneryControl(), 'bottom-right');
+
+/* ---------- tour: after a while without input the camera follows a tram, then moves on to another ---------- */
+const TOUR_IDLE_MS = 45000, TOUR_SHOT_MS = 40000;
+let tour = null, tourT = performance.now();
+function pickTourVehicle(now) {
+  const moving = [...journeys.values()].filter(j => { const p = positionOf(j, now); return p && !p.dwell && !p.approach && j.rt !== false && haversine(p.ll, [47.5565, 7.5895]) < 3500; });
+  const trams = moving.filter(j => j.cat === 'tram' && j !== tour?.j), pool = trams.length ? trams : moving;
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+function tourStep(now) {
+  const t = performance.now(), dt = Math.min(.1, (t - tourT) / 1000); tourT = t;
+  if (!touring || Date.now() - lastInput < TOUR_IDLE_MS) { if (tour) { tour = null; map.stop(); } return; }
+  const p = tour && positionOf(tour.j, now);
+  if (!p || now > tour.until) {
+    const j = pickTourVehicle(now); if (!j) return;
+    const q = positionOf(j, now);
+    tour = { j, until: now + TOUR_SHOT_MS, flying: true };
+    map.flyTo({ center: [q.ll[1], q.ll[0]], zoom: 17.4 + Math.random(), pitch: 55 + Math.random() * 15, bearing: map.getBearing() + 40, duration: 6000, essential: true });
+    map.once('moveend', () => { if (tour?.j === j) tour.flying = false; });
+    return;
+  }
+  if (tour.flying) return;
+  // glide after the vehicle (it kept moving during the flight) and orbit slowly
+  const c = map.getCenter(), k = 1 - Math.exp(-dt * 2);
+  map.jumpTo({ center: [c.lng + (p.ll[1] - c.lng) * k, c.lat + (p.ll[0] - c.lat) * k], bearing: map.getBearing() + dt * 3 });
+}
+
 /* ---------- screensaver chrome ---------- */
 setInterval(() => { $('clock').textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }, 1000);
 setInterval(() => setDaylight(new Date()), 60000);
-let idleT; const wake = () => { document.body.classList.remove('idle'); clearTimeout(idleT); idleT = setTimeout(() => document.body.classList.add('idle'), 20000); };
+let idleT, lastInput = Date.now();
+const wake = () => { lastInput = Date.now(); document.body.classList.remove('idle'); clearTimeout(idleT); idleT = setTimeout(() => document.body.classList.add('idle'), 20000); };
 ['mousemove', 'keydown', 'touchstart', 'click'].forEach(e => window.addEventListener(e, wake)); wake();
 
 window.baselLive = { map, journeys, positionOf, trackBetween, routes };   // console handle for debugging
 
 /* ---------- go ---------- */
-mapReady.then(() => { setupStopLayer(); return loadRoutes(); }).then(() => { map.addLayer(vehicleLayer); return pollLoop(); });
+mapReady.then(() => { setupScenery(); setupStopLayer(); return loadRoutes(); }).then(() => { map.addLayer(vehicleLayer); return pollLoop(); });
 requestAnimationFrame(render);
