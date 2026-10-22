@@ -19,12 +19,14 @@ const FALLBACK_COLOURS = { '1': '#835237', '2': '#A68351', '3': '#324EA1', '6': 
   '12': '#9471AD', '14': '#F58220', '15': '#009640', '16': '#AFCA0B', '17': '#00AEEF', '21': '#00A295' };
 
 import * as maplibregl from 'maplibre-gl';
-import { vehicleLayer, drawVehicles, vehicleType } from './vehicles3d.js';
+import { vehicleLayer, drawVehicles, vehicleType, loadModels, setDaylight } from './vehicles3d.js';
 
 /* ---------- map ---------- */
 const ZOOM_3D = 16;   // from here vehicles are 3D models (a tram is ~60 px long); below it, 2D badges
 const map = new maplibregl.Map({ container: 'map', style: 'https://tiles.openfreemap.org/styles/dark', center: [7.59, 47.556], zoom: 13,
-  maxPitch: 75, hash: true, attributionControl: { compact: true, customAttribution: 'transport.opendata.ch' } });
+  maxPitch: 75, hash: true, attributionControl: false });
+// credits for any glTF vehicle models (models/manifest.json) join the map attribution
+loadModels().then(credits => map.addControl(new maplibregl.AttributionControl({ compact: true, customAttribution: ['transport.opendata.ch', ...credits] })));
 map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'bottom-right');
 const mapReady = new Promise(r => map.on('load', r));
 
@@ -365,6 +367,7 @@ map.on('zoom', applyZoomClass); map.on('pitch', applyZoomClass); applyZoomClass(
 
 /* ---------- screensaver chrome ---------- */
 setInterval(() => { $('clock').textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }, 1000);
+setInterval(() => setDaylight(new Date()), 60000);
 let idleT; const wake = () => { document.body.classList.remove('idle'); clearTimeout(idleT); idleT = setTimeout(() => document.body.classList.add('idle'), 20000); };
 ['mousemove', 'keydown', 'touchstart', 'click'].forEach(e => window.addEventListener(e, wake)); wake();
 
