@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Basel Live · 3D spike</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/maplibre-gl@6.13.0/dist/maplibre-gl.css" />
+<style>
+  html, body { margin: 0; height: 100%; background: #0b0e14; color: #eef1f6; font: 12px/1.45 Inter, system-ui, sans-serif; overflow: hidden; }
+  #map { position: absolute; inset: 0; }
+  #hud { position: absolute; top: 14px; left: 14px; z-index: 2; padding: 12px 14px; border-radius: 12px; min-width: 300px;
+         background: rgba(13, 17, 24, .82); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,.08); }
+  #hud h1 { margin: 0 0 8px; font-size: 14px; font-weight: 600; }
+  #hud table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+  #hud td { padding: 2px 0; } #hud td:last-child { text-align: right; font-weight: 600; }
+  #hud .ok { color: #4ade80; } #hud .bad { color: #fb7185; } #hud .muted { color: #8b95a7; font-weight: 400; }
+  #hud .row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  #hud button { font: inherit; color: inherit; background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.12); border-radius: 7px; padding: 4px 9px; cursor: pointer; }
+  #hud button.on { background: #2f6fde; border-color: #2f6fde; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/",
+  "maplibre-gl": "https://cdn.jsdelivr.net/npm/maplibre-gl@6.13.0/dist/maplibre-gl.mjs"
+} }
+</script>
+</head>
+<body>
+<div id="map"></div>
+<div id="hud">
+  <h1>3D spike · tram 6 at Barfüsserplatz</h1>
+  <table>
+    <tr><td>Scale (model ÷ map length)</td><td id="mScale">–</td></tr>
+    <tr><td>Heading error (cab vs track)</td><td id="mHead">–</td></tr>
+    <tr><td>Float32 error, local origin</td><td id="mLocal">–</td></tr>
+    <tr><td>Float32 error, naive mercator</td><td id="mNaive">–</td></tr>
+    <tr><td class="muted" colspan="2" id="mCam">–</td></tr>
+  </table>
+  <div class="row">
+    <button id="bPlay" class="on">Driving</button>
+    <button id="bFollow">Follow</button>
+    <button id="bNaive">Render naive</button>
+  </div>
+  <div class="row">
+    <button data-cam="top">Top z17</button>
+    <button data-cam="street">Street z19</button>
+    <button data-cam="close">Close z21</button>
+  </div>
+</div>
+<script type="module" src="spike3d.js"></script>
+</body>
+</html>

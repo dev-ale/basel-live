@@ -4,8 +4,20 @@
     {
       "name": "tram-chase",
       "runtimeExecutable": "python3",
-      "runtimeArgs": ["server.py"],
+      "runtimeArgs": [
+        "server.py"
+      ],
       "port": 8765
+    },
+    {
+      "name": "static",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8770"
+      ],
+      "port": 8770
     }
   ]
 }
