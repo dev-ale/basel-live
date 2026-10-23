@@ -1,7 +1,7 @@
 <h1 align="center">🚋 Basel Live</h1>
 
 <p align="center">
-  Every tram and bus in Basel, moving live on a map.<br>
+  Every tram and bus in Basel, moving live on a map, or in a photorealistic 3D city.<br>
   Real tracks, official line colours, real-life delays.
 </p>
 
@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <b>183 vehicles on a Monday evening · updated every 30 s · zero npm dependencies</b>
+  <b>183 vehicles on a Monday evening · updated every 30 s · no build step, no npm dependencies</b>
 </p>
 
 ---
@@ -76,13 +76,39 @@ python3 -m http.server 8765
 The page then falls back to polling [transport.opendata.ch](https://transport.opendata.ch) stationboards for 24 hub stops. You get real delays but only the vehicles passing those hubs, roughly a third of the network.
 </details>
 
+## 3D mode
+
+<p align="center">
+  <img src="docs/screenshot-3d.jpg" alt="3D mode: a green BVB tram 6 crossing the Mittlere Brücke over the Rhine, Kleinbasel waterfront ahead" width="100%">
+</p>
+
+Click **Enter 3D Basel** for a CesiumJS world with the same live vehicles as articulated 3D models that follow the real track, the real sun over Basel (shadows, night lighting, a ☀︎ slider to preview other times of day) and a ride-along camera: click any tram for chase or cab view. Idle for 20 s and it rides a random tram on its own.
+
+- **Photorealistic city** (recommended): create a free [Cesium ion](https://ion.cesium.com/signup) account, add *Google Photorealistic 3D Tiles* from the Asset Depot to your assets, and put your token in `.env`:
+
+  ```bash
+  echo "CESIUM_ION_TOKEN=paste-your-token-here" >> .env
+  ```
+
+  The token is passed to the browser, which needs it to stream the tiles. The free Community plan covers about 1,000 3D sessions a month for personal use.
+- **Without a token** it falls back to swisstopo open data: swissBUILDINGS3D, swissTLM3D, terrain and SWISSIMAGE (untextured buildings).
+- **Faster start (optional):** keep a local copy of CesiumJS (22 MB, git-ignored) instead of loading it from the CDN:
+
+  ```bash
+  npm pack cesium@1.144.0 && mkdir -p vendor/cesium && tar -xzf cesium-1.144.0.tgz -C vendor/cesium --strip-components=3 package/Build/Cesium && rm cesium-1.144.0.tgz
+  ```
+
+Vehicle heights come from the rendered 3D surface, sampled every 8 m along each track near the camera, so trams cross bridges on the deck and pass under overpasses.
+
 ## How it works
 
 ```
 opentransportdata.swiss ──GTFS zip──▶ prepare_gtfs.py ──▶ gtfs/basel.json  (BVB+BLT timetable, 83 MB)
-                        ──GTFS-RT ──▶ server.py  ──/vehicles.json──▶ app.js ──▶ MapLibre map
+                        ──GTFS-RT ──▶ server.py  ──/vehicles.json──▶ app.js ──▶ MapLibre map (2D, 3D vehicles from zoom 16)
+                                                                       └──▶ world3d.js ──▶ CesiumJS (photoreal 3D city)
 OpenStreetMap (Overpass) ──route relations──▶ build_routes.py ──▶ routes.json (tracks + colours)
 transport.opendata.ch ◀──station click── app.js
+Cesium ion (Google 3D Tiles) / swisstopo ──3D city, terrain──▶ world3d.js
 ```
 
 | Piece | Role |
@@ -90,7 +116,8 @@ transport.opendata.ch ◀──station click── app.js
 | `prepare_gtfs.py` | Streams the 4.5 GB Swiss GTFS out of the zip and keeps only BVB/BLT: 59 routes, ~188k trips/year, 1451 platforms. |
 | `server.py` | Serves the page. Every 30 s it fetches the national GTFS-RT feed (one request, ~10k trips for all of Switzerland), keeps the Basel ones and merges the delays into today's schedule. Exposes `/vehicles.json` and `/stops.json`. |
 | `app.js` | Polls `/vehicles.json` every 10 s and animates each vehicle between its last and next stop along the track. Each line's OSM ways form a graph; the vehicle follows the shortest path between the two stops (falling back to the whole tram or bus network for diversions). |
-| `vehicles3d.js` | The 3D layer: a MapLibre custom layer drawn with three.js. Vehicle sections are built procedurally per type and drawn instanced, ~100 draw calls for the whole fleet. |
+| `vehicles3d.js` | The vehicles: procedural models per type (Flexity, Combino, Tango, Tina, Citaro), drawn instanced in a MapLibre custom layer with three.js on the map, and exported as GLB sections for the 3D world. |
+| `world3d.js` | Photoreal 3D mode. Lazy-loads CesiumJS, streams the 3D city, places each vehicle's sections along the track with heights sampled from the rendered surface, and runs the sun, night lighting and ride-along camera. |
 | `models/` | Optional real glTF models replacing the procedural ones; see [models/README.md](models/README.md). |
 | `spike3d.html` | The Phase 0 test page: one tram at Barfüsserplatz with live scale, heading and float32-jitter checks. |
 | `build_routes.py` | Turns an Overpass dump of route relations into `routes.json`. Already included for Basel; see below to refresh. |
@@ -122,6 +149,7 @@ The real-time feed covers all of Switzerland. Change `AGENCY_RE` in `prepare_gtf
 - Aerial photos: © [swisstopo](https://www.swisstopo.admin.ch/) SWISSIMAGE, free geodata of the Swiss Confederation.
 - Rendering: [MapLibre GL JS](https://maplibre.org) and [three.js](https://threejs.org), loaded from jsDelivr.
 - Station departures: [transport.opendata.ch](https://transport.opendata.ch).
+- 3D: [CesiumJS](https://cesium.com/platform/cesiumjs/) (Apache 2.0); Google Photorealistic 3D Tiles via Cesium ion; © swisstopo 3D data, terrain and SWISSIMAGE.
 - Line colours are the official BVB/BLT colours as tagged in OSM; buses are grey as in OSM.
 
 ## Roadmap

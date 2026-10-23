@@ -8,6 +8,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import * as maplibregl from 'maplibre-gl';
 
 /* ---------- fleet: approximate Basel dimensions ---------- */
@@ -162,6 +163,27 @@ function buildSection(t, i) {
   if (front) taper(Object.values(parts).flat(), L, t.bus ? { span: .6, k: .06, zr: .85, rake: .1 } : { span: 1.6, k: .2, zr: 1.15, rake: .32 }, null);
   if (rear) taper(Object.values(parts).flat(), L, null, t.bus ? { span: .4, k: .05 } : { span: .9, k: .1 });
   return Object.entries(parts).filter(([, g]) => g.length).map(([k, g]) => ({ geometry: mergeGeometries(g), material: MAT[k], colour: k === 'livery' || k === 'accent' ? k : null }));
+}
+
+/* ---------- the same sections as GLB files, for the photoreal CesiumJS world (world3d.js) ---------- */
+// Cesium cannot recolour per instance, so paint is baked in: operator livery, plus a trim colour where the
+// map shows the line colour (the 3D world puts the line on a badge instead)
+const BAKED = { BVB: { body: '#2f8a3c', trim: '#f2f2ee' }, BLT: { body: '#f0bf00', trim: '#c8231b' }, other: { body: '#d9dde3', trim: '#4a5260' } };
+const glbCache = new Map();
+export function vehicleGlbUrl(t, i, op) {
+  const o = operator(op), key = `${t.name}|${i}|${o}`;
+  if (!glbCache.has(key)) glbCache.set(key, (async () => {
+    const scene = new THREE.Scene();
+    for (const m of KINDS.get(t)[i]) {
+      let material = m.material;
+      if (m.userData.colour) material = new THREE.MeshStandardMaterial({ color: BAKED[o][m.userData.colour === 'livery' ? 'body' : 'trim'], roughness: .38, metalness: .2 });
+      else if (material === MAT.glass) material = Object.assign(MAT.glass.clone(), { emissiveIntensity: 1 });   // world3d.js scales the glow by darkness
+      scene.add(new THREE.Mesh(m.geometry, material));
+    }
+    const glb = await new GLTFExporter().parseAsync(scene, { binary: true });
+    return URL.createObjectURL(new Blob([glb], { type: 'model/gltf-binary' }));
+  })());
+  return glbCache.get(key);
 }
 
 /* ---------- instanced section kinds ---------- */

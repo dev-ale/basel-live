@@ -20,6 +20,7 @@ const FALLBACK_COLOURS = { '1': '#835237', '2': '#A68351', '3': '#324EA1', '6': 
 
 import * as maplibregl from 'maplibre-gl';
 import { vehicleLayer, drawVehicles, vehicleType, loadModels, setDaylight } from './vehicles3d.js';
+import { world3d, bindWorld3d } from './world3d.js';
 
 /* ---------- map ---------- */
 const ZOOM_3D = 16;   // from here vehicles are 3D models (a tram is ~60 px long); below it, 2D badges
@@ -130,7 +131,7 @@ async function loadRoutes() {
     const data = await res.json();
     const features = [], all = { tram: [], bus: [] };
     for (const [line, r] of Object.entries(data.lines)) {
-      routes[line] = { colour: r.colour, graph: buildGraph(r.segments) };
+      routes[line] = { colour: r.colour, segments: r.segments, graph: buildGraph(r.segments) };
       all[TRAM_LINES.test(line) ? 'tram' : 'bus'].push(...r.segments);
       const tram = TRAM_LINES.test(line), colour = r.colour || colourFor(line);
       for (const seg of r.segments) features.push({ type: 'Feature', properties: { colour, tram }, geometry: { type: 'LineString', coordinates: seg.map(([lat, lon]) => [lon, lat]) } });
@@ -343,9 +344,11 @@ function render() {
     q.sort((x, y) => x[1].at.arr - y[1].at.arr); let back = 0;
     for (const [j, p] of q) { if (back) { p.d -= back; p.ll = pointAt(j, p.k, p.d); } back += vehicleType(j).sections.reduce((a, b) => a + b, 0) + 3; }
   }
+  const inWorld = world3d.active, rows = [];   // the photoreal 3D world covers the map: feed it instead of the markers
   for (const [j, p] of live) {
     n++;
     const isLate = (p.next?.delay ?? 0) >= 2; if (isLate) late++;
+    if (inWorld) { rows.push({ j, p, isLate }); continue; }
     const cls = `${isLate ? 'late' : ''} ${p.approach || j.rt === false ? 'approach' : ''} ${p.dwell ? 'dwell' : ''}`;
     if (!j.marker) addVehicle(j, p, cls);
     else {
@@ -355,7 +358,8 @@ function render() {
     }
     if (in3D && inView(p.ll)) items.push(vehicle3d(j, p, isLate));
   }
-  if (in3D || drawn3D) { drawVehicles(items, now); drawn3D = in3D; map.triggerRepaint(); }
+  if (inWorld) world3d.frame(rows, now);
+  else if (in3D || drawn3D) { drawVehicles(items, now); drawn3D = in3D; map.triggerRepaint(); }
   $('nVeh').textContent = n; $('nLate').textContent = late;
   if (stopsDirty && map.getSource('stops')) { map.getSource('stops').setData(stopsGeoJSON()); stopsDirty = false; }
   requestAnimationFrame(render);
@@ -419,7 +423,7 @@ function pickTourVehicle(now) {
 }
 function tourStep(now) {
   const t = performance.now(), dt = Math.min(.1, (t - tourT) / 1000); tourT = t;
-  if (!touring || Date.now() - lastInput < TOUR_IDLE_MS) { if (tour) { tour = null; map.stop(); } return; }
+  if (!touring || world3d.active || Date.now() - lastInput < TOUR_IDLE_MS) { if (tour) { tour = null; map.stop(); } return; }   // the 3D world rides trams itself
   const p = tour && positionOf(tour.j, now);
   if (!p || now > tour.until) {
     const j = pickTourVehicle(now); if (!j) return;
@@ -442,7 +446,15 @@ let idleT, lastInput = Date.now();
 const wake = () => { lastInput = Date.now(); document.body.classList.remove('idle'); clearTimeout(idleT); idleT = setTimeout(() => document.body.classList.add('idle'), 20000); };
 ['mousemove', 'keydown', 'touchstart', 'click'].forEach(e => window.addEventListener(e, wake)); wake();
 
-window.baselLive = { map, journeys, positionOf, trackBetween, routes };   // console handle for debugging
+/* ---------- map ⇄ photoreal 3D world ---------- */
+bindWorld3d({ journeys, stops, routes, trackBetween, along, colourFor, textOn, popupFor, short, TRAM_LINES, $ });
+$('btn3d').onclick = async () => {
+  try { await world3d.enter(map.getCenter(), map.getZoom() + 1); }   // world3d.js thinks in Leaflet zoom (256 px tiles)
+  catch (e) { console.error(e); $('worldStatus').textContent = `3D failed: ${e.message}`; }
+};
+$('btn2d').onclick = () => { const ll = world3d.exit(); if (ll) map.jumpTo({ center: [ll[1], ll[0]] }); };
+
+window.baselLive = { map, journeys, positionOf, trackBetween, routes, world3d };   // console handle for debugging
 
 /* ---------- go ---------- */
 mapReady.then(() => { setupScenery(); setupStopLayer(); return loadRoutes(); }).then(() => { map.addLayer(vehicleLayer); return pollLoop(); });
