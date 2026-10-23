@@ -15,6 +15,7 @@ export function bindWorld3d(ctx) {
 const CESIUM_CDN = 'https://cdn.jsdelivr.net/npm/cesium@1.144.0/Build/Cesium/', CESIUM_LOCAL = 'vendor/cesium/';   // local copy: see README
 const SWISS3D = 'https://3d.geo.admin.ch/';
 const GOOGLE_3D_ION_ASSET = 2275207;
+const MODEL_RANGE = 1500;   // metres from the camera: vehicles further away are badges only (no model, no shadow)
 const M_LAT = 110540, mLon = lat => 111320 * Math.cos(lat * Math.PI / 180);
 const lerpAngle = (a, b, k) => a + (((b - a + Math.PI * 3) % (Math.PI * 2)) - Math.PI) * k;
 
@@ -71,17 +72,17 @@ export const world3d = {
       terrainProvider: await C.CesiumTerrainProvider.fromUrl(SWISS3D + 'ch.swisstopo.terrain.3d/v1/', { requestVertexNormals: true }),
       animation: false, timeline: false, baseLayerPicker: false, geocoder: false, homeButton: false, sceneModePicker: false,
       navigationHelpButton: false, fullscreenButton: false, infoBox: false, selectionIndicator: false,
-      shadows: true, terrainShadows: C.ShadowMode.ENABLED, msaaSamples: 4, contextOptions: { webgl: { powerPreference: 'high-performance' } },
+      shadows: true, terrainShadows: C.ShadowMode.ENABLED, msaaSamples: 2, contextOptions: { webgl: { powerPreference: 'high-performance' } },
     });
     v.imageryLayers.add(imagery('https://wmts.geo.admin.ch/1.0.0/ch.swisstopo.swissimage/default/current/3857/{z}/{x}/{y}.jpeg', 20, '© swisstopo SWISSIMAGE'));
-    v.resolutionScale = Math.min(2, window.devicePixelRatio || 1);   // render at native retina resolution
+    v.resolutionScale = Math.min(2, window.devicePixelRatio || 1);   // start at native retina resolution
     const s = v.scene;
     s.globe.enableLighting = true; s.globe.dynamicAtmosphereLighting = true; s.globe.depthTestAgainstTerrain = true;
     s.globe.maximumScreenSpaceError = 1.5; s.globe.showGroundAtmosphere = true;
     s.highDynamicRange = true; s.postProcessStages.fxaa.enabled = true;
     if (C.Tonemapper?.PBR_NEUTRAL !== undefined) s.postProcessStages.tonemapper = C.Tonemapper.PBR_NEUTRAL;
     s.fog.enabled = true; s.fog.density = 1.2e-4;
-    Object.assign(s.shadowMap, { softShadows: true, size: 4096, maximumDistance: 3000, darkness: .35 });
+    Object.assign(s.shadowMap, { softShadows: true, size: 2048, maximumDistance: MODEL_RANGE, darkness: .35 });
     s.screenSpaceCameraController.minimumZoomDistance = 3;
     const bloom = s.postProcessStages.bloom; Object.assign(bloom.uniforms, { contrast: 128, brightness: -.62, glowOnly: false, delta: 1, sigma: 1.6, stepSize: 1 });
     v.clock.shouldAnimate = true;
@@ -102,6 +103,7 @@ export const world3d = {
     this.sunLight = s.light;   // after dark: a faint bluish moonlight from above instead of a sun shining up through the ground
     this.moonLight = new C.DirectionalLight({ direction: C.Cartesian3.normalize(C.Cartesian3.negate(C.Cartesian3.fromDegrees(7.59, 47.556, 1), new C.Cartesian3()), new C.Cartesian3()), color: C.Color.fromCssColorString('#9fb4ff'), intensity: .55 });
     if (!this.photoreal) try { s.primitives.add(await C.Cesium3DTileset.fromUrl(SWISS3D + 'ch.swisstopo.swisstlm3d.3d/v1/tileset.json', { maximumScreenSpaceError: 4 })); } catch (e) { console.warn('swissTLM3D', e); }
+    this.adaptQuality();
     v.creditDisplay.addStaticCredit(new C.Credit('3D: © swisstopo · live: opentransportdata.swiss'));
 
     if (!this.photoreal) this.drawTracks();   // draped lines streak across Google's mesh; the real rails are in the photos anyway
@@ -118,6 +120,26 @@ export const world3d = {
     }, C.ScreenSpaceEventType.LEFT_CLICK);
     s.preRender.addEventListener(() => { v.clock.currentTime = C.JulianDate.fromDate(new Date(Date.now() + this.sunOffset)); this.updateLight(); });
     $('worldStatus').textContent = '';
+  },
+
+  /* Adaptive quality, measured on this machine: the city mesh dominates the frame (Google tiles at screen-space
+   * error 6 ≈ 2.3 M triangles, 23 ms; at 12 ≈ 1 M, 15 ms), then pixels (retina ≈ +40 %); vehicles and shadows are ~1 ms each.
+   * Step down a rung every 2 s while below 40 fps, back up above 56; the GPU keeps the best rung it can hold. Below
+   * 10 fps the page is throttled (background window) or stalled on a tile burst, which says nothing about the GPU.
+   * The mesh stops at error 12: beyond that street-level façades melt into blocks. */
+  adaptQuality() {
+    const v = this.viewer, dpr = Math.min(2, window.devicePixelRatio || 1), base = this.photoreal ? 6 : 2;
+    const rungs = [[dpr, base], [dpr, base * 4 / 3], [Math.max(1, dpr * .75), base * 5 / 3], [1, base * 5 / 3], [1, base * 2]];   // [resolution scale, max screen-space error]
+    let rung = 1, frames = 0, since = performance.now();
+    const apply = () => { const [res, sse] = rungs[rung]; v.resolutionScale = res; this.buildings.maximumScreenSpaceError = sse; };
+    apply();
+    v.scene.postRender.addEventListener(() => {
+      frames++; const t = performance.now(); if (t - since < 2000) return;
+      const fps = frames * 1000 / (t - since); frames = 0; since = t;
+      if (document.hidden || !this.active || fps < 10) return;   // throttled, stalled or not shown: no signal
+      if (fps < 40 && rung < rungs.length - 1) { rung++; apply(); }
+      else if (fps > 56 && rung > 0) { rung--; apply(); }
+    });
   },
 
   /* swisstopo terrain heights are above sea level, Google's mesh is above the ellipsoid: measure the gap on a few open squares */
@@ -212,6 +234,7 @@ export const world3d = {
   frame(rows, now) {
     if (!this.viewer) return;
     const C = Cesium, seen = new Set(), rot = new C.Matrix3(), tilt = new C.Matrix3(), enu = new C.Matrix4();
+    const cam = this.viewer.camera.positionCartographic, cLat = C.Math.toDegrees(cam.latitude), cLon = C.Math.toDegrees(cam.longitude);
     for (const { j, p, isLate } of rows) {
       seen.add(j.key);
       let veh = this.vehicles.get(j.key);
@@ -221,7 +244,9 @@ export const world3d = {
       const type = veh.type, fb = this.heightAt(j, pose); if (fb == null) continue;
       let front = pose.d + type.length / 2;   // sections run back from the front; each model is centred between its ends
       const head = this.pointAt(j, pose, front, fb);
-      for (let i = 0; i < type.sections.length; i++) {
+      const near = this.follow === j.key || Math.hypot((head[0] - cLat) * M_LAT, (head[1] - cLon) * mLon(cLat)) < MODEL_RANGE + Math.max(0, cam.height - 300);   // Basel's ground is ~300 m above the ellipsoid
+      if (!near) { for (const m of veh.models) if (m) m.show = false; }
+      else for (let i = 0; i < type.sections.length; i++) {
         const fa = this.pointAt(j, pose, front, fb), ra = this.pointAt(j, pose, front -= type.sections[i], fb);
         const lat = (fa[0] + ra[0]) / 2, lon = (fa[1] + ra[1]) / 2, h = (fa[2] + ra[2]) / 2, dx = (fa[1] - ra[1]) * mLon(lat), dy = (fa[0] - ra[0]) * M_LAT;
         if (Math.hypot(dx, dy) > .5) {

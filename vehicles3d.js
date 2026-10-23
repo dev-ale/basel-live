@@ -173,13 +173,17 @@ const glbCache = new Map();
 export function vehicleGlbUrl(t, i, op) {
   const o = operator(op), key = `${t.name}|${i}|${o}`;
   if (!glbCache.has(key)) glbCache.set(key, (async () => {
-    const scene = new THREE.Scene();
+    // paint, trim and fittings become one vertex-coloured primitive: 3 draw calls per section instead of 5
+    const scene = new THREE.Scene(), opaque = [];
     for (const m of KINDS.get(t)[i]) {
-      let material = m.material;
-      if (m.userData.colour) material = new THREE.MeshStandardMaterial({ color: BAKED[o][m.userData.colour === 'livery' ? 'body' : 'trim'], roughness: .38, metalness: .2 });
-      else if (material === MAT.glass) material = Object.assign(MAT.glass.clone(), { emissiveIntensity: 1 });   // world3d.js scales the glow by darkness
-      scene.add(new THREE.Mesh(m.geometry, material));
+      if (m.userData.colour) {
+        const g = m.geometry.clone(), c = new THREE.Color(BAKED[o][m.userData.colour === 'livery' ? 'body' : 'trim']), n = g.attributes.position.count, a = new Float32Array(n * 3);
+        for (let k = 0; k < n; k++) c.toArray(a, k * 3);
+        g.setAttribute('color', new THREE.BufferAttribute(a, 3)); opaque.push(g);
+      } else if (m.material === MAT.fixed) opaque.push(m.geometry);
+      else scene.add(new THREE.Mesh(m.geometry, m.material === MAT.glass ? Object.assign(MAT.glass.clone(), { emissiveIntensity: 1 }) : m.material));   // world3d.js scales the glow by darkness
     }
+    if (opaque.length) scene.add(new THREE.Mesh(mergeGeometries(opaque), new THREE.MeshStandardMaterial({ vertexColors: true, roughness: .4, metalness: .15 })));
     const glb = await new GLTFExporter().parseAsync(scene, { binary: true });
     return URL.createObjectURL(new Blob([glb], { type: 'model/gltf-binary' }));
   })());
