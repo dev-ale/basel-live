@@ -1,0 +1,39 @@
+services:
+  app:
+    build: { context: ., target: app }
+    image: basel-live-app
+    env_file: .env
+    environment:
+      GTFS_REFRESH_AT: "04:30"
+    volumes:
+      - gtfs:/data
+    init: true
+    restart: unless-stopped
+    mem_limit: 2g
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/stops.json', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10m
+
+  web:
+    build: { context: ., target: web }
+    image: basel-live-web
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-:80}
+    ports:
+      - "${HTTP_PORT:-8080}:80"
+      - "${HTTPS_PORT:-8443}:443"
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+
+volumes:
+  gtfs:
+  caddy-data:
+  caddy-config:

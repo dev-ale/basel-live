@@ -1,0 +1,8 @@
+.env
+.git
+.claude
+gtfs/
+vendor/
+osm_*.json
+routes.log
+docs/

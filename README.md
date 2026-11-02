@@ -76,6 +76,29 @@ python3 -m http.server 8765
 The page then falls back to polling [transport.opendata.ch](https://transport.opendata.ch) stationboards for 24 hub stops. You get real delays but only the vehicles passing those hubs, roughly a third of the network.
 </details>
 
+## Docker
+
+For a server: two containers from one `Dockerfile`, started by `compose.yaml`.
+
+- **app** runs `server.py` and keeps the timetable current on its own: on first start it downloads the newest Swiss GTFS and filters it (about 2 minutes), then checks again every night at 04:30 and restarts the server when a new one is out. Only reachable inside the compose network.
+- **web** is [Caddy](https://caddyserver.com): automatic HTTPS, gzip/zstd (`/vehicles.json` shrinks from ~430 KB to ~46 KB), a local CesiumJS copy, and only the public files (`index.html`, the JS, `routes.json`, `models/`). Everything else, `.env` included, is not served.
+
+Put `OTD_TOKEN` in `.env` (step 2 above), then:
+
+```bash
+docker compose up -d --build
+```
+
+Open <http://localhost:8080>. On a server with a domain pointing at it:
+
+```bash
+SITE_ADDRESS=basel-live.example.ch HTTP_PORT=80 HTTPS_PORT=443 docker compose up -d --build
+```
+
+`CESIUM_ION_TOKEN` in `.env` is handed to every visitor's browser (that is how Cesium ion works), so leave it out on a public site; the 3D world then uses swisstopo data. The app needs about 400 MB of RAM. Works with Podman too (`podman compose`).
+
+Without Docker, `python3 gtfs_update.py` replaces step 3: it finds the newest timetable zip by itself and only rebuilds when there is a new one.
+
 ## 3D mode
 
 <p align="center">
