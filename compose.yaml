@@ -5,6 +5,7 @@ services:
     env_file: .env
     environment:
       GTFS_REFRESH_AT: "04:30"
+      HOST: 0.0.0.0   # server.py listens on localhost only by default; Caddy reaches it over the compose network
     volumes:
       - gtfs:/data
     init: true
