@@ -7,12 +7,14 @@
 
 Run:  python3 server.py   (port 8765)
 """
-import json, os, sys, threading, time, urllib.request
+import json, os, posixpath, sys, threading, time, urllib.request
+from urllib.parse import unquote
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 
 PORT = int(os.environ.get('PORT', 8765))
+HOST = os.environ.get('HOST', '127.0.0.1')   # 0.0.0.0 makes it reachable from other machines (or from outside a container)
 TZ = ZoneInfo('Europe/Zurich')
 RT_URL = 'https://api.opentransportdata.swiss/la/gtfs-rt?format=JSON'
 RT_EVERY = 30
@@ -174,6 +176,17 @@ def stops_json():
     return STOPS_JSON
 
 # ---------------------------------------------------------------- http
+# Only these are served; everything else in the folder (.env, gtfs/, .git, the scripts) is not.
+PUBLIC_FILES = {'index.html', 'app.js', 'vehicles3d.js', 'world3d.js', 'routes.json', 'spike3d.html', 'spike3d.js'}
+PUBLIC_DIRS = ('models/', 'vendor/')
+
+def is_public(url_path):
+    # same steps as SimpleHTTPRequestHandler.translate_path: drop query, decode, normalise
+    p = posixpath.normpath(unquote(url_path.split('?', 1)[0].split('#', 1)[0])).lstrip('/')
+    if p in ('', '.'): return True   # index.html
+    if any(part.startswith('.') for part in p.split('/')): return False
+    return p in PUBLIC_FILES or p.startswith(PUBLIC_DIRS)
+
 class H(SimpleHTTPRequestHandler):
     def __init__(self, *a, **k): super().__init__(*a, directory=HERE, **k)
     def log_message(self, *a): pass
@@ -191,9 +204,13 @@ class H(SimpleHTTPRequestHandler):
             return self.send_json(json.dumps(body, ensure_ascii=False).encode())
         if self.path.startswith('/stops.json'): return self.send_json(stops_json())
         if self.path.startswith('/config.json'): return self.send_json(json.dumps({'cesiumIonToken': os.environ.get('CESIUM_ION_TOKEN', '')}).encode())
-        if self.path in ('/.env', '/gtfs/basel.json'): self.send_error(403); return
         return super().do_GET()
+    def send_head(self):   # shared by GET and HEAD
+        if not is_public(self.path): self.send_error(404); return None
+        return super().send_head()
+    def list_directory(self, path):
+        self.send_error(404); return None
 
 if __name__ == '__main__':
-    log(f'serving on http://localhost:{PORT}  (token {"set" if TOKEN else "MISSING"})')
-    ThreadingHTTPServer(('', PORT), H).serve_forever()
+    log(f'serving on http://{"localhost" if HOST in ("127.0.0.1", "localhost") else HOST}:{PORT}  (token {"set" if TOKEN else "MISSING"})')
+    ThreadingHTTPServer((HOST, PORT), H).serve_forever()
